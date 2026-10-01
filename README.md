@@ -1,6 +1,6 @@
 # AlgorithmX Flutter SDK
 
-Connect your Flutter app to [AlgorithmX](https://algorithmx.com), the campaign management and customer data platform. The plugin sends customer identity and events, handles AlgorithmX push notifications, routes campaign actions to your navigation, and shows in-app campaigns on Android and iOS.
+Connect your Flutter app to [AlgorithmX](https://algorithmx.cloud), the campaign management and customer data platform. The plugin sends customer identity and events, handles AlgorithmX push notifications, routes campaign actions to your navigation, and shows in-app campaigns on Android and iOS.
 
 The plugin contains the native AlgorithmX Android and iOS SDKs, so you do not add them separately.
 
@@ -45,7 +45,7 @@ await AlgorithmX.instance.trackEvent('purchase', properties: {'total': 49.99, 'c
 
 The integration guide covers the native setup, push notifications on both platforms, navigation handlers, and testing.
 
-**[Flutter integration guide →](https://algorithmx.com/en/docs/integrations/flutter)**
+**[Flutter integration guide →](https://algorithmx.cloud/en/docs/integrations/flutter)**
 
 ## Development checks
 

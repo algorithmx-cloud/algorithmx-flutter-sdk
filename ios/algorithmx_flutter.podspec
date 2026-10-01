@@ -5,7 +5,7 @@ Pod::Spec.new do |s|
   s.description      = 'Provides the full AlgorithmX iOS SDK through Flutter method channels.'
   s.homepage         = 'https://github.com/algorithmx-cloud/algorithmx-flutter-sdk'
   s.license          = { :type => 'MIT', :file => '../LICENSE' }
-  s.author           = { 'AlgorithmX' => 'hello@algorithmx.com' }
+  s.author           = { 'AlgorithmX' => 'hello@algorithmx.cloud' }
   s.source           = { :path => '.' }
   s.source_files     = 'algorithmx_flutter/Sources/algorithmx_flutter/**/*.swift'
   # The native SDK's Apple privacy manifest (synced with the sources).
