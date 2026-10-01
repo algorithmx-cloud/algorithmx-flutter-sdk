@@ -1,0 +1,36 @@
+name: algorithmx_flutter
+description: >-
+  AlgorithmX SDK for Flutter: customer identity and events, push notifications,
+  campaign actions, and in-app campaigns on Android and iOS.
+version: 1.0.0
+homepage: https://algorithmx.com
+repository: https://github.com/algorithmx-cloud/algorithmx-flutter-sdk
+issue_tracker: https://github.com/algorithmx-cloud/algorithmx-flutter-sdk/issues
+documentation: https://algorithmx.com/en/docs/integrations/flutter
+topics:
+  - push-notifications
+  - analytics
+  - marketing
+  - in-app-messaging
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: algorithmx.engage.flutter
+        pluginClass: AlgorithmXFlutterPlugin
+      ios:
+        pluginClass: AlgorithmXFlutterPlugin

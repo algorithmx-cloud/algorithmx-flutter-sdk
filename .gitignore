@@ -1,0 +1,20 @@
+# Flutter and Dart generated state
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+build/
+coverage/
+
+# Native build outputs
+android/.gradle/
+ios/.build/
+ios/.swiftpm/
+ios/Pods/
+ios/Flutter/
+
+# Editor and operating-system state
+.DS_Store
+.idea/
+*.iml

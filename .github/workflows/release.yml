@@ -1,0 +1,40 @@
+# Publishes the plugin to pub.dev when a version tag such as 1.0.0 is pushed.
+#
+# One-time setup on pub.dev (package Admin tab → Automated publishing):
+#   enable publishing from GitHub Actions, repository
+#   algorithmx-cloud/algorithmx-flutter-sdk, tag pattern {{version}}.
+# pub.dev then trusts this workflow through GitHub's OIDC token; no secret is stored.
+# The very first version must be published by hand (`flutter pub publish`)
+# before automated publishing can be enabled for the package.
+name: Release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for pub.dev automated publishing.
+    steps:
+      - uses: actions/checkout@v4
+
+      # Provides the pub.dev OIDC credential for `pub publish`.
+      - uses: dart-lang/setup-dart@v1
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter pub get
+
+      - name: Check pubspec version matches the tag
+        run: |
+          version=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          test "$version" = "${GITHUB_REF_NAME}" || { echo "pubspec version $version does not match tag ${GITHUB_REF_NAME}"; exit 1; }
+
+      - run: flutter analyze
+      - run: flutter test
+
+      - run: flutter pub publish --force

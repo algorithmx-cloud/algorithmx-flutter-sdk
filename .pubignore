@@ -1,0 +1,30 @@
+# pub uses this file instead of .gitignore, so it repeats those rules.
+
+# Flutter and Dart generated state
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+build/
+coverage/
+
+# Native build outputs
+android/.gradle/
+ios/.build/
+ios/.swiftpm/
+ios/Pods/
+ios/Flutter/
+
+# Editor and operating-system state
+.DS_Store
+.idea/
+*.iml
+
+# Repository-only material: internal design notes, the monorepo sync tool,
+# CI workflows, and the example's local build output.
+doc/
+tool/
+.github/
+example/build/
+example/.dart_tool/

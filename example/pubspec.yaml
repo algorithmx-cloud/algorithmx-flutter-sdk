@@ -1,0 +1,19 @@
+name: algorithmx_flutter_example
+description: Small Flutter app showing the AlgorithmX SDK entry points.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  algorithmx_flutter:
+    path: ..
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

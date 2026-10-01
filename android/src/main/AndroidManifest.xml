@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application>
+
+        <activity
+            android:name="algorithmx.engage.activities.CampaignActivity"
+            android:exported="true"
+            android:theme="@style/Theme.EngageSdk.Dialog" />
+
+        <activity
+            android:name="algorithmx.engage.activities.NotificationClickActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
+            android:excludeFromRecents="true" />
+
+        <receiver
+            android:name="algorithmx.engage.notifications.NotificationClickReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.engage.NOTIFICATION_CLICK" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="algorithmx.engage.receivers.NotificationActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="algorithmx.engage.ACTION_BUTTON_CLICKED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>
