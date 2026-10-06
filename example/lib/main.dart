@@ -35,6 +35,7 @@ class _ExampleScreenState extends State<ExampleScreen> {
   final _apiUrl = TextEditingController(
     text: 'https://your-algorithmx-endpoint.example.com',
   );
+  final _partnerId = TextEditingController(text: 'your-partner-id');
   final _userId = TextEditingController(text: 'flutter-demo-user');
   final _token = TextEditingController();
   final _logLines = <String>[];
@@ -81,6 +82,7 @@ class _ExampleScreenState extends State<ExampleScreen> {
     // State, so later native callbacks cannot update a disposed widget.
     _sdk.clearHandlers();
     _apiUrl.dispose();
+    _partnerId.dispose();
     _userId.dispose();
     _token.dispose();
     super.dispose();
@@ -118,9 +120,16 @@ class _ExampleScreenState extends State<ExampleScreen> {
               decoration:
                   const InputDecoration(labelText: 'AlgorithmX API URL'),
             ),
+            TextField(
+              controller: _partnerId,
+              decoration: const InputDecoration(labelText: 'Partner ID'),
+            ),
             ElevatedButton(
               onPressed: () => _run('Initialize', () async {
-                await _sdk.initialize(apiBaseUrl: _apiUrl.text.trim());
+                await _sdk.initialize(
+                  apiBaseUrl: _apiUrl.text.trim(),
+                  partnerId: _partnerId.text.trim(),
+                );
                 if (mounted) setState(() => _initialized = true);
               }),
               child: const Text('1. Initialize'),
@@ -161,7 +170,7 @@ class _ExampleScreenState extends State<ExampleScreen> {
                   : () => _run(
                         'Track event',
                         () => _sdk.trackEvent(
-                          'flutter_example_opened',
+                          'flutterExampleOpened',
                           properties: {'screen': 'example'},
                         ),
                       ),

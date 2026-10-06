@@ -12,14 +12,14 @@ package algorithmx.engage.interfaces
  * class MyApplication : Application(), ActionButtonHandler {
  *     override fun onCreate() {
  *         super.onCreate()
- *         AlgorithmX.initialize(this, "https://api.example.com")
+ *         AlgorithmX.initialize(this, "https://api.example.com", "your-partner-id")
  *         AlgorithmX.setActionButtonHandler(this)
  *     }
  *     
  *     override fun onActionButtonClicked(buttonId: String, actionText: String, title: String, notificationData: Map<String, Any>): Boolean {
  *         // Handle button click
  *         when (actionText) {
- *             "show_special_offer" -> {
+ *             "showSpecialOffer" -> {
  *                 // Navigate to special offer screen
  *                 return true // Handled
  *             }
@@ -35,7 +35,7 @@ interface ActionButtonHandler {
      * Called when an action button on a notification is clicked.
      * 
      * @param buttonId The unique ID of the button that was clicked
-     * @param actionText The action text/identifier (e.g., "show_special_offer", "dismiss", etc.)
+     * @param actionText The action text/identifier (e.g., "showSpecialOffer", "dismiss", etc.)
      * @param title The button title/label shown to the user
      * @param notificationData Complete notification data including campaign info, etc.
      * @return true if the action was handled by the client, false to let SDK handle it

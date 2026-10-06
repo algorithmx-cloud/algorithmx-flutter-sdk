@@ -7,7 +7,7 @@ package algorithmx.engage.interfaces
  * 1. SDK pre-processes the notification (status update, campaign click tracking).
  * 2. `onNotificationClick` is called. Return `true` if you handled the action;
  *    `false` to let the SDK fall through to its default action router.
- * 3. For `custom_action` notifications, `onCustomAction` is called with the
+ * 3. For `customAction` notifications, `onCustomAction` is called with the
  *    parsed action key from `actionData`.
  */
 interface NotificationClickListener {

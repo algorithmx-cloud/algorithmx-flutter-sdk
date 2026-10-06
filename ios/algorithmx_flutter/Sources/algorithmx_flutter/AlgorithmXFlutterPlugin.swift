@@ -11,6 +11,7 @@ import UserNotifications
 public final class AlgorithmXFlutterPlugin: NSObject, FlutterPlugin {
     private static let initializationLock = NSLock()
     private static var initializedApiBaseUrl: String?
+    private static var initializedPartnerId: String?
     private static let callbacks = FlutterCallbackCoordinator()
 
     private let channel: FlutterMethodChannel
@@ -56,30 +57,35 @@ public final class AlgorithmXFlutterPlugin: NSObject, FlutterPlugin {
     ///
     /// Call this in the host AppDelegate's `didFinishLaunchingWithOptions` when
     /// silent APNs notifications must work on a cold start. Dart must later call
-    /// `initialize` with the same URL; that second call is a no-op. Returning
-    /// `false` means a different URL was already used during this process.
+    /// `initialize` with the same URL and partner ID; that second call is a no-op.
+    /// Returning `false` means a value is empty, or a different URL or partner ID
+    /// was already used during this process.
     /// Pass the `appGroup` shared with your Notification Service Extension so it
     /// can report delivered + impression (see the iOS integration guide).
     @discardableResult
-    public static func initializeForBackground(apiBaseUrl: String, appGroup: String? = nil) -> Bool {
+    public static func initializeForBackground(
+        apiBaseUrl: String, partnerId: String, appGroup: String? = nil
+    ) -> Bool {
         let normalized = apiBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !partnerId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
         initializationLock.lock()
         defer { initializationLock.unlock() }
 
         if let configured = initializedApiBaseUrl {
-            let matches = configured == normalized
+            let matches = configured == normalized && initializedPartnerId == partnerId
             if matches { callbacks.installNativeListeners() }
             return matches
         }
         if let appGroup = appGroup {
-            AlgorithmX.shared.initialize(apiBaseUrl: normalized, appGroup: appGroup)
+            AlgorithmX.shared.initialize(apiBaseUrl: normalized, partnerId: partnerId, appGroup: appGroup)
         } else {
-            AlgorithmX.shared.initialize(apiBaseUrl: normalized)
+            AlgorithmX.shared.initialize(apiBaseUrl: normalized, partnerId: partnerId)
         }
         initializedApiBaseUrl = normalized
+        initializedPartnerId = partnerId
         callbacks.installNativeListeners()
         return true
     }
@@ -105,15 +111,20 @@ public final class AlgorithmXFlutterPlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "initialize":
             guard let apiBaseUrl = requiredString(args, "apiBaseUrl", result) else { return }
+            guard let partnerId = requiredString(args, "partnerId", result) else { return }
             let normalized = apiBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 result(argumentError("apiBaseUrl must not be empty."))
                 return
             }
-            guard Self.initializeForBackground(apiBaseUrl: apiBaseUrl) else {
+            guard !partnerId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                result(argumentError("partnerId must not be empty."))
+                return
+            }
+            guard Self.initializeForBackground(apiBaseUrl: apiBaseUrl, partnerId: partnerId) else {
                 result(FlutterError(
                     code: "already_initialized",
-                    message: "AlgorithmX was already initialized with a different API base URL.",
+                    message: "AlgorithmX was already initialized with a different API base URL or partner ID.",
                     details: nil
                 ))
                 return

@@ -15,7 +15,7 @@ keys.
 
 | Dart method | Result | Android and iOS native operation | Notes |
 | --- | --- | --- | --- |
-| `initialize(apiBaseUrl: url)` | `Future<void>` | `initialize` | Required before normal use. The push entry points can initialize natively before Dart starts. Repeated initialization with the same URL is safe in the plugin; a different URL is an error. |
+| `initialize(apiBaseUrl: url, partnerId: id)` | `Future<void>` | `initialize` | Required before normal use. The push entry points can initialize natively before Dart starts. Repeated initialization with the same URL and partner ID is safe in the plugin; a different value is an error. Every request carries the partner ID in the `x-partner-id` header. |
 | `setDeviceFingerprint(value)` | `Future<void>` | `setDeviceFingerprint` | Overrides the automatically chosen Android ID or iOS vendor ID. |
 | `getDeviceFingerprint()` | `Future<String?>` | `getDeviceFingerprint` | Returns the stored fingerprint, or null if not set. |
 | `identifyUser(userId, attributes: map)` | `Future<void>` | `identifyUser` | Sets the effective fingerprint to `userId` (saved across restarts), sends an identify request with `previousFingerprintDevice`, and re-registers the push token. `attributes` is optional. |

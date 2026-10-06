@@ -1,5 +1,11 @@
 # AlgorithmX Flutter SDK
 
+> **Recommended naming: camelCase**
+>
+> We recommend `camelCase` for custom event names and payload keys, such as `addToCart` and `productId`. This is a recommendation only: the SDK does not enforce or normalize custom names or keys. Titles can use natural text in any language.
+>
+> SDK-defined fields, built-in events, and action types use the documented camelCase names. Legacy SDK push keys and built-in event/action names are still accepted on input; outgoing SDK tracking uses the canonical names. Your backend must accept `/api/v1/tracks/algoViewInteract`, with camelCase interaction fields and `payload` as a JSON string.
+
 Connect your Flutter app to [AlgorithmX](https://algorithmx.cloud), the campaign management and customer data platform. The plugin sends customer identity and events, handles AlgorithmX push notifications, routes campaign actions to your navigation, and shows in-app campaigns on Android and iOS.
 
 The plugin contains the native AlgorithmX Android and iOS SDKs, so you do not add them separately.
@@ -31,10 +37,15 @@ Future<void> main() async {
     return false;
   };
 
-  await sdk.initialize(apiBaseUrl: 'https://api.example.com');
+  await sdk.initialize(
+    apiBaseUrl: 'https://api.example.com',
+    partnerId: 'your-partner-id',
+  );
   runApp(const MyApp());
 }
 ```
+
+AlgorithmX gives you the API base URL and your partner ID. The SDK sends the partner ID in the `x-partner-id` header of every SDK API request.
 
 Identify customers after login and forward your business events:
 
@@ -42,6 +53,20 @@ Identify customers after login and forward your business events:
 await AlgorithmX.instance.identifyUser('customer_123', attributes: {'language': 'en'});
 await AlgorithmX.instance.trackEvent('purchase', properties: {'total': 49.99, 'currency': 'USD'});
 ```
+
+## SDK HTTP endpoints
+
+API URLs are the initialized `apiBaseUrl` plus the paths below. Every SDK API request includes the `x-partner-id` header containing the initialized partner ID.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/identify` | Identify the customer and send optional attributes. |
+| `POST` | `/api/v1/tracks/{eventName}` | Send a custom event with its original name and payload. |
+| `POST` | `/api/v1/tracks/algoViewInteract` | Report campaign and push interactions. |
+| `PUT` | `/api/v1/inAppPushEvents/device/status` | Update notification delivery or open status. |
+| `POST` | `/api/v1/notificationTokens` | Register a push token for the current customer. |
+
+`{eventName}` is the custom name supplied to `trackEvent`; the SDK keeps it unchanged. Campaign HTML and notification images are downloaded with `GET` from their supplied URLs, so those downloads have no fixed SDK path. Campaign HTML may also load its own resources. A caller-supplied campaign interaction `endpoint` overrides the default interaction path.
 
 The integration guide covers the native setup, push notifications on both platforms, navigation handlers, and testing.
 

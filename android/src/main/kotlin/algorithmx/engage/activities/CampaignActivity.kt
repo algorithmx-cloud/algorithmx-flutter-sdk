@@ -13,13 +13,14 @@ import algorithmx.engage.R
 import algorithmx.engage.core.AlgorithmX
 import algorithmx.engage.utils.JsonUtil
 import algorithmx.engage.utils.SdkLog
+import algorithmx.engage.utils.SdkPayload
 
 /**
  * Hosts the campaign WebView. Mirrors iOS `CampaignViewController`:
  *
  *   - Impression tracked once the page has finished loading (onPageFinished),
  *     NOT on activity create. Display history recorded in the same place.
- *   - `close_dismiss` reported when a shown campaign is destroyed without a
+ *   - `closeDismiss` reported when a shown campaign is destroyed without a
  *     JS-bridge close or submit (a campaign that never loaded reports nothing).
  *   - Bridge interactions forward the template's own fields plus `timestamp`
  *     and `source`, exactly like iOS. The template owns the close button.
@@ -32,7 +33,7 @@ class CampaignActivity : AppCompatActivity() {
         const val EXTRA_URL = "extra_url"
         const val EXTRA_DYNAMIC_CONTENT = "extra_dynamic_content"
         const val EXTRA_EXPIRES_AT = "extra_expires_at"
-        private const val INTERACTION_ENDPOINT = "/api/v1/tracks/algo_view_interact"
+        private const val INTERACTION_ENDPOINT = "/api/v1/tracks/algoViewInteract"
         private const val TAG = "AlgorithmX"
     }
 
@@ -90,8 +91,10 @@ class CampaignActivity : AppCompatActivity() {
                         "url" to url,
                         "timestamp" to System.currentTimeMillis()
                     )
-                    dynamicContent.keySet().forEach { key ->
-                        impressionPayload["dynamic_$key"] = dynamicContent.getString(key) ?: ""
+                    if (!dynamicContent.isEmpty) {
+                        impressionPayload["dynamicContent"] = dynamicContent.keySet().associateWith { key ->
+                            dynamicContent.getString(key) ?: ""
+                        }
                     }
                     AlgorithmX.trackCampaignInteraction(
                         cId, vId, "impression", impressionPayload, endpoint = INTERACTION_ENDPOINT
@@ -129,8 +132,8 @@ class CampaignActivity : AppCompatActivity() {
             val cId = campaignId; val vId = variationId
             if (!cId.isNullOrEmpty() && !vId.isNullOrEmpty()) {
                 AlgorithmX.trackCampaignInteraction(
-                    cId, vId, "close_dismiss",
-                    mapOf("reason" to "view_dismissed", "timestamp" to System.currentTimeMillis()),
+                    cId, vId, "closeDismiss",
+                    mapOf("reason" to "viewDismissed", "timestamp" to System.currentTimeMillis()),
                     endpoint = INTERACTION_ENDPOINT
                 )
             }
@@ -152,27 +155,27 @@ class CampaignActivity : AppCompatActivity() {
                 put("source", "javascript")
             }
 
-            when (event) {
-                "campaign_close" -> {
+            when (SdkPayload.builtInEvent(event)) {
+                "campaignClose" -> {
                     trackedExplicitClose = true
                     if (!cId.isNullOrEmpty() && !vId.isNullOrEmpty()) {
                         AlgorithmX.trackCampaignInteraction(cId, vId, "close", payload, endpoint = INTERACTION_ENDPOINT)
                     }
                     runOnUiThread { finish() }
                 }
-                "campaign_click" -> {
+                "campaignClick" -> {
                     if (!cId.isNullOrEmpty() && !vId.isNullOrEmpty()) {
                         AlgorithmX.trackCampaignInteraction(cId, vId, "click", payload, endpoint = INTERACTION_ENDPOINT)
                     }
                 }
-                "campaign_submit" -> {
+                "campaignSubmit" -> {
                     trackedExplicitClose = true
                     if (!cId.isNullOrEmpty() && !vId.isNullOrEmpty()) {
                         AlgorithmX.trackCampaignInteraction(cId, vId, "submit", payload, endpoint = INTERACTION_ENDPOINT)
                     }
                     runOnUiThread { finish() }
                 }
-                "campaign_coupon_copy", "copy_coupon" -> {
+                "campaignCouponCopy", "copyCoupon" -> {
                     if (!cId.isNullOrEmpty() && !vId.isNullOrEmpty()) {
                         val couponCode = pickCouponCode(data)?.trim()
                         if (!couponCode.isNullOrEmpty()) {

@@ -89,7 +89,7 @@ class AlgorithmX {
   /// The native SDK tracks the open before calling this handler.
   FutureOr<bool> Function(AlgorithmXData data)? onNotificationClick;
 
-  /// Called for `action_type: "custom_action"` after native JSON parsing.
+  /// Called for `actionType: "customAction"` after native JSON parsing.
   ///
   /// [data] includes a `parsedActionData` map. Return `true` when handled.
   /// The current Android native router observes the callback result but has no
@@ -130,13 +130,20 @@ class AlgorithmX {
     onCampaignInteraction = null;
   }
 
-  /// Initialises the native SDK with the AlgorithmX backend URL.
+  /// Initialises the native SDK with the AlgorithmX backend URL and partner ID.
   ///
   /// Call once during startup before calling other methods. Native code stores
   /// this URL and begins watching the app lifecycle so queued campaigns can be
-  /// displayed when the app becomes active.
-  Future<void> initialize({required String apiBaseUrl}) =>
-      _invokeVoid('initialize', {'apiBaseUrl': apiBaseUrl});
+  /// displayed when the app becomes active. [partnerId] is sent as the
+  /// `x-partner-id` header on every request.
+  Future<void> initialize({
+    required String apiBaseUrl,
+    required String partnerId,
+  }) =>
+      _invokeVoid('initialize', {
+        'apiBaseUrl': apiBaseUrl,
+        'partnerId': partnerId,
+      });
 
   /// Overrides the automatically generated device fingerprint.
   ///
@@ -166,6 +173,9 @@ class AlgorithmX {
 
   /// Tracks an arbitrary app event through the native SDK.
   ///
+  /// Use camelCase names and keys for consistency. Custom data is forwarded
+  /// unchanged; casing is not enforced or normalized.
+  ///
   /// [properties] can contain nested channel-safe maps and lists, such as
   /// `{'price': 19.95, 'items': [{'sku': 'A1'}]}`.
   Future<void> trackEvent(String name, {AlgorithmXData? properties}) =>
@@ -174,7 +184,7 @@ class AlgorithmX {
   /// Tracks a campaign interaction such as `impression`, `click`, or `close`.
   ///
   /// [endpoint] overrides the native default endpoint when your backend uses a
-  /// custom route. The usual route is `/api/v1/tracks/algo_view_interact`.
+  /// custom route. The usual route is `/api/v1/tracks/algoViewInteract`.
   Future<void> trackCampaignInteraction({
     required String campaignId,
     required String variationId,
@@ -218,7 +228,7 @@ class AlgorithmX {
   /// Android: forwards an FCM message to the native SDK.
   ///
   /// The SDK routes silent campaign triggers and visual notifications using
-  /// the message's `engage_action` key. For delivery while the Flutter engine
+  /// the message's `engageAction` key. For delivery while the Flutter engine
   /// is stopped, wire your Android `FirebaseMessagingService` directly to the
   /// native SDK as shown in the integration guide.
   Future<void> handleFcmMessage(

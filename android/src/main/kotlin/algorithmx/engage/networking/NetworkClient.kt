@@ -11,10 +11,15 @@ import java.util.concurrent.TimeUnit
 /**
  * HTTP transport for the SDK. Synchronous calls dispatched from EventDispatcher's
  * IO coroutine scope. Timeouts mirror iOS: 10s connect, 30s read.
+ * Every request carries the partner ID in the `x-partner-id` header.
  */
 object NetworkClient {
     private const val TAG = "AlgorithmX"
+    private const val PARTNER_ID_HEADER = "x-partner-id"
     private val jsonMediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+
+    /** Set by `AlgorithmX.initialize`. */
+    @Volatile var partnerId: String = ""
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -25,6 +30,7 @@ object NetworkClient {
     fun postJson(url: String, body: Any) {
         try {
             val req = Request.Builder().url(url)
+                .header(PARTNER_ID_HEADER, partnerId)
                 .post(JsonUtil.toJson(body).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { res ->
@@ -42,6 +48,7 @@ object NetworkClient {
     fun putJson(url: String, body: Any) {
         try {
             val req = Request.Builder().url(url)
+                .header(PARTNER_ID_HEADER, partnerId)
                 .put(JsonUtil.toJson(body).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { res ->
@@ -58,7 +65,10 @@ object NetworkClient {
 
     fun getJson(url: String): Any? {
         return try {
-            val req = Request.Builder().url(url).get().build()
+            val req = Request.Builder().url(url)
+                .header(PARTNER_ID_HEADER, partnerId)
+                .get()
+                .build()
             client.newCall(req).execute().use { res ->
                 val body = res.body?.string() ?: return null
                 JsonUtil.fromJson(body)

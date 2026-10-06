@@ -19,7 +19,7 @@ import Foundation
     /// ```swift
     /// func onDeepLinkReceived(url: URL) -> Bool {
     ///     // Track analytics
-    ///     AlgorithmX.shared.trackEvent("deep_link_intercepted", properties: [
+    ///     AlgorithmX.shared.trackEvent("deepLinkIntercepted", properties: [
     ///         "url": url.absoluteString,
     ///         "scheme": url.scheme ?? ""
     ///     ])

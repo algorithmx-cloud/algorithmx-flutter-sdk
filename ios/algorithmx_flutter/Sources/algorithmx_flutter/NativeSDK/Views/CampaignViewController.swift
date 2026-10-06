@@ -6,7 +6,7 @@
 //  Mirrors Android `CampaignActivity`:
 //   - Tracks "impression" once the HTML has loaded (WKNavigationDelegate didFinish),
 //     not in viewDidLoad. Records the webview display at the same point.
-//   - Reports "close_dismiss" if a shown campaign is dismissed without a JS bridge
+//   - Reports "closeDismiss" if a shown campaign is dismissed without a JS bridge
 //     close or submit (a campaign that never loaded reports nothing).
 //   - Bridge interactions forward the template's own fields plus `timestamp` and
 //     `source`, exactly like Android. The template owns the close button; the view
@@ -30,7 +30,7 @@ public class CampaignViewController: UIViewController {
     private var trackedExplicitClose = false
     private var shown = false
 
-    private static let interactionEndpoint = "/api/v1/tracks/algo_view_interact"
+    private static let interactionEndpoint = "/api/v1/tracks/algoViewInteract"
 
     public init(
         campaignId: String, variationId: String, url: String,
@@ -59,8 +59,8 @@ public class CampaignViewController: UIViewController {
         if shown && !trackedExplicitClose {
             AlgorithmX.shared.trackCampaignInteraction(
                 campaignId: campaignId, variationId: variationId,
-                interactionType: "close_dismiss",
-                payload: ["reason": "view_dismissed", "timestamp": Int64(Date().timeIntervalSince1970 * 1000)],
+                interactionType: "closeDismiss",
+                payload: ["reason": "viewDismissed", "timestamp": Int64(Date().timeIntervalSince1970 * 1000)],
                 endpoint: Self.interactionEndpoint
             )
         }
@@ -181,7 +181,7 @@ extension CampaignViewController: WKScriptMessageHandler {
         payload["source"] = "javascript"
 
         switch event {
-        case "campaign_close":
+        case "campaignClose", "campaign_close":
             trackedExplicitClose = true
             AlgorithmX.shared.trackCampaignInteraction(
                 campaignId: campaignId, variationId: variationId,
@@ -190,14 +190,14 @@ extension CampaignViewController: WKScriptMessageHandler {
             )
             dismiss(animated: true)
 
-        case "campaign_click":
+        case "campaignClick", "campaign_click":
             AlgorithmX.shared.trackCampaignInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "click",
                 payload: payload, endpoint: Self.interactionEndpoint
             )
 
-        case "campaign_submit":
+        case "campaignSubmit", "campaign_submit":
             trackedExplicitClose = true
             AlgorithmX.shared.trackCampaignInteraction(
                 campaignId: campaignId, variationId: variationId,
@@ -206,7 +206,7 @@ extension CampaignViewController: WKScriptMessageHandler {
             )
             dismiss(animated: true)
 
-        case "campaign_coupon_copy", "copy_coupon":
+        case "campaignCouponCopy", "copyCoupon", "campaign_coupon_copy", "copy_coupon":
             if let coupon = pickCouponCode(body)?.trimmingCharacters(in: .whitespacesAndNewlines),
                !coupon.isEmpty {
                 UIPasteboard.general.string = coupon
@@ -248,8 +248,8 @@ extension CampaignViewController: WKNavigationDelegate {
             "url": url,
             "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
         ]
-        dynamicContent?.forEach { key, value in
-            impressionPayload["dynamic_\(key)"] = AlgorithmX.dynamicValueText(value)
+        if let dynamicContent = dynamicContent, !dynamicContent.isEmpty {
+            impressionPayload["dynamicContent"] = dynamicContent.mapValues { AlgorithmX.dynamicValueText($0) }
         }
         AlgorithmX.shared.trackCampaignInteraction(
             campaignId: campaignId, variationId: variationId,

@@ -18,6 +18,7 @@ import algorithmx.engage.interfaces.DeepLinkHandler
 import algorithmx.engage.interfaces.ActionButtonHandler
 import algorithmx.engage.interfaces.CampaignInteractionListener
 import algorithmx.engage.events.EventDispatcher
+import algorithmx.engage.networking.NetworkClient
 import algorithmx.engage.webview.WebViewQueueManager
 import algorithmx.engage.webview.WebViewDisplayRule
 import algorithmx.engage.notifications.EngageNotificationManager
@@ -25,13 +26,14 @@ import algorithmx.engage.notifications.NotificationActionRouter
 import algorithmx.engage.activities.CampaignActivity
 import algorithmx.engage.activities.NotificationClickActivity
 import algorithmx.engage.utils.SdkLog
+import algorithmx.engage.utils.SdkPayload
 import algorithmx.engage.lifecycle.ActivityLifecycleManager
 
 /**
  * Public entry point of the AlgorithmX in-app SDK.
  *
  * Mirrors the iOS `AlgorithmX` singleton: same method names, same payload shapes,
- * same notification payload keys (engage_action, algo_campaign_id, etc.).
+ * same notification payload keys (engageAction, algoCampaignId, etc.).
  */
 object AlgorithmX {
     private const val TAG = "AlgorithmX"
@@ -70,10 +72,14 @@ object AlgorithmX {
 
     // region ─ Initialization ──────────────────────────────────────────────────
 
-    /** Safe to call more than once: later calls only update the base URL. */
-    fun initialize(application: Application, apiBaseUrl: String) {
+    /**
+     * Safe to call more than once: later calls only update the base URL and partner ID.
+     * [partnerId] is sent as the `x-partner-id` header on every request.
+     */
+    fun initialize(application: Application, apiBaseUrl: String, partnerId: String) {
         appContext = application.applicationContext
         apiUrl = apiBaseUrl.trimEnd('/')
+        NetworkClient.partnerId = partnerId
         if (initialized) return
         initialized = true
 
@@ -88,7 +94,7 @@ object AlgorithmX {
         // process); otherwise default to the Android ID like iOS uses IDFV.
         fingerprintDevice = loadIdentifiedUserId() ?: fingerprintDevice ?: readAndroidId()
 
-        SdkLog.d(TAG, "AlgorithmX initialized with apiBaseUrl=$apiUrl")
+        SdkLog.d(TAG, "AlgorithmX initialized with apiBaseUrl=$apiUrl partnerId=$partnerId")
     }
 
     fun destroy() {
@@ -190,18 +196,18 @@ object AlgorithmX {
     ) {
         val userId = resolveUserId()
         val body = mutableMapOf<String, Any>(
-            "FingerprintDevice" to userId,
-            "CampaignId" to (campaignId.toIntOrNull() ?: 0),
-            "VariationId" to (variationId.toIntOrNull() ?: 0),
-            "InteractionType" to interactionType
+            "fingerprintDevice" to userId,
+            "campaignId" to (campaignId.toIntOrNull() ?: 0),
+            "variationId" to (variationId.toIntOrNull() ?: 0),
+            "interactionType" to interactionType
         )
         payload?.let {
-            try { body["Payload"] = algorithmx.engage.utils.JsonUtil.toJson(it) }
+            try { body["payload"] = algorithmx.engage.utils.JsonUtil.toJson(it) }
             catch (e: Exception) { SdkLog.e(TAG, "Failed to serialize payload", e) }
         }
         sessionId?.let { body["sessionId"] = it }
 
-        val endpointPath = endpoint ?: "/api/v1/tracks/algo_view_interact"
+        val endpointPath = endpoint ?: "/api/v1/tracks/algoViewInteract"
         eventDispatcher?.send("$apiUrl$endpointPath", "POST", body)
 
         campaignInteractionListener?.onCampaignInteraction(
@@ -221,7 +227,7 @@ object AlgorithmX {
         )
         errorMessage?.let { body["errorMessage"] = it }
         eventDispatcher?.send(
-            "$apiUrl/api/v1/in-app-push-events/device/status",
+            "$apiUrl/api/v1/inAppPushEvents/device/status",
             "PUT",
             body
         )
@@ -238,7 +244,7 @@ object AlgorithmX {
             "token" to token,
             "platform" to "android"
         )
-        eventDispatcher?.send("$apiUrl/api/v1/notification-tokens", "POST", body)
+        eventDispatcher?.send("$apiUrl/api/v1/notificationTokens", "POST", body)
     }
 
     // endregion
@@ -250,12 +256,14 @@ object AlgorithmX {
      * another provider, forward only these to [handleFcmMessage]. Same check as
      * iOS `isAlgorithmXPush`.
      */
-    fun isAlgorithmXPush(data: Map<String, String>): Boolean =
-        data["engage_action"] == "algo_trigger_webview" || data["engage_action"] == "algo_show_notification"
+    fun isAlgorithmXPush(data: Map<String, String>): Boolean {
+        val action = SdkPayload.notification(data)["engageAction"]
+        return action == "algoTriggerWebview" || action == "algoShowNotification"
+    }
 
     /**
      * Unified FCM message entry point. Routes between silent webview triggers and
-     * normal notifications based on the `engage_action` field. Pushes that aren't
+     * normal notifications based on the `engageAction` field. Pushes that aren't
      * from AlgorithmX are ignored (like iOS), so forwarding every message is safe.
      */
     fun handleFcmMessage(
@@ -264,9 +272,10 @@ object AlgorithmX {
         notificationTitle: String? = null,
         notificationBody: String? = null
     ) {
-        when (data["engage_action"]) {
-            "algo_trigger_webview" -> processSilentNotification(context, data)
-            "algo_show_notification" -> processNormalNotification(context, data, notificationTitle, notificationBody)
+        val pushData = SdkPayload.notification(data)
+        when (pushData["engageAction"]) {
+            "algoTriggerWebview" -> processSilentNotification(context, pushData)
+            "algoShowNotification" -> processNormalNotification(context, pushData, notificationTitle, notificationBody)
             else -> SdkLog.d(TAG, "Ignoring a push that isn't from AlgorithmX")
         }
     }
@@ -277,40 +286,42 @@ object AlgorithmX {
         title: String? = null,
         body: String? = null
     ) {
-        data["algo_notification_id"]?.toIntOrNull()?.let {
+        val pushData = SdkPayload.notification(data)
+        pushData["algoNotificationId"]?.toIntOrNull()?.let {
             updateNotificationStatus(it, NotificationEventStatus.DELIVERED)
         }
-        notificationManager?.handleNormalNotification(context, data, title, body)
-            ?: createFallbackNotification(context, data, title, body)
+        notificationManager?.handleNormalNotification(context, pushData, title, body)
+            ?: createFallbackNotification(context, pushData, title, body)
     }
 
     fun processSilentNotification(context: Context, data: Map<String, String>) {
-        val action = data["engage_action"]
-        if (action != "algo_trigger_webview") return
+        val pushData = SdkPayload.notification(data)
+        val action = pushData["engageAction"]
+        if (action != "algoTriggerWebview") return
 
-        val campaignId = data["algo_campaign_id"]
-        val variationId = data["engage_variation_id"] ?: "0"
-        val webviewUrl = data["engage_webview_url"]
+        val campaignId = pushData["algoCampaignId"]
+        val variationId = pushData["engageVariationId"] ?: "0"
+        val webviewUrl = pushData["engageWebviewUrl"]
 
         // Store the backend-issued user id separately from the device fingerprint.
-        data["engage_user_id"]?.takeIf { it.isNotEmpty() }?.let { engageUserId = it }
+        pushData["engageUserId"]?.takeIf { it.isNotEmpty() }?.let { engageUserId = it }
 
         if (campaignId.isNullOrEmpty() || webviewUrl.isNullOrEmpty()) return
 
         val dynamicContent = try {
-            data["engage_dynamic_content"]?.takeIf { it.isNotEmpty() }
+            pushData["engageDynamicContent"]?.takeIf { it.isNotEmpty() }
                 ?.let { algorithmx.engage.utils.JsonUtil.fromJson(it) as? Map<String, Any> }
         } catch (e: Exception) { null }
 
         val configs = try {
-            data["configs"]?.takeIf { it.isNotEmpty() }
+            pushData["configs"]?.takeIf { it.isNotEmpty() }
                 ?.let { algorithmx.engage.utils.JsonUtil.fromJson(it) as? Map<String, Any> }
         } catch (e: Exception) { null }
 
         val displayRule = WebViewDisplayRule.fromConfigs(configs)
         val userId = resolveUserId()
 
-        trackEvent("silent_notification_received", mapOf(
+        trackEvent("silentNotificationReceived", mapOf(
             "campaignId" to campaignId,
             "variationId" to variationId,
             "action" to action,
@@ -324,7 +335,7 @@ object AlgorithmX {
         // would stay queued and block its variation id.
         if (webViewQueueManager?.canDisplayWebView(campaignId, variationId, userId, displayRule) == true ||
             webViewQueueManager?.willBeAbleToDisplayLater(campaignId, variationId, userId, displayRule) == true) {
-            webViewQueueManager?.enqueueWebView(campaignId, variationId, webviewUrl, dynamicContent, displayRule, data.toMap())
+            webViewQueueManager?.enqueueWebView(campaignId, variationId, webviewUrl, dynamicContent, displayRule, pushData.toMap())
         }
     }
 
@@ -460,7 +471,7 @@ object AlgorithmX {
         title: String,
         notificationData: Map<String, Any>
     ): Boolean =
-        actionButtonHandler?.onActionButtonClicked(buttonId, actionText, title, notificationData) ?: false
+        actionButtonHandler?.onActionButtonClicked(buttonId, actionText, title, SdkPayload.notification(notificationData)) ?: false
 
     // endregion
 

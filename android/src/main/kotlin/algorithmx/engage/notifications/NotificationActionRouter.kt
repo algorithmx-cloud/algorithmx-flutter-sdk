@@ -6,16 +6,17 @@ import android.os.Bundle
 import algorithmx.engage.core.AlgorithmX
 import algorithmx.engage.utils.JsonUtil
 import algorithmx.engage.utils.SdkLog
+import algorithmx.engage.utils.SdkPayload
 
 /**
  * Centralised handler for notification action routing. Mirrors the iOS click
- * handler so both platforms expose the same `action_type` semantics.
+ * handler so both platforms expose the same `actionType` semantics.
  *
- * Supported `action_type` values:
- *   - `open_web_page`  → SDK opens the URL from `actionData.url` in the browser.
- *   - `open_webview`   → SDK opens an in-app campaign WebView.
- *   - `open_screen`    → SDK calls the deep link handler with `actionData.deepLink`.
- *   - `custom_action`  → SDK extracts `actionData.action` and calls `onCustomAction`.
+ * Supported `actionType` values:
+ *   - `openWebPage`  → SDK opens the URL from `actionData.url` in the browser.
+ *   - `openWebview`   → SDK opens an in-app campaign WebView.
+ *   - `openScreen`    → SDK calls the deep link handler with `actionData.deepLink`.
+ *   - `customAction`  → SDK extracts `actionData.action` and calls `onCustomAction`.
  *   - `standard` / null → No-op; partner reads notification data directly.
  */
 object NotificationActionRouter {
@@ -23,7 +24,10 @@ object NotificationActionRouter {
 
     /** True when the intent extras come from an AlgorithmX notification. */
     fun isAlgorithmXExtras(extras: Bundle): Boolean =
-        extras.containsKey("algo_notification_id") ||
+        extras.containsKey("algoNotificationId") ||
+            extras.containsKey("algoCampaignId") ||
+            extras.containsKey("engageAction") ||
+            extras.containsKey("algo_notification_id") ||
             extras.containsKey("algo_campaign_id") ||
             extras.containsKey("engage_action")
 
@@ -40,47 +44,48 @@ object NotificationActionRouter {
      * whose handler didn't handle it falls back to this default routing).
      */
     fun route(context: Context, data: Map<String, Any>, trackOpen: Boolean = true) {
+        val notificationData = SdkPayload.notification(data)
         // 1. Track open + click.
-        if (trackOpen) trackOpened(data)
+        if (trackOpen) trackOpened(notificationData)
 
         // 2. Give the partner the first chance to handle.
         val listener = AlgorithmX.getNotificationClickListener()
-        if (listener?.onNotificationClick(data) == true) return
+        if (listener?.onNotificationClick(notificationData) == true) return
 
-        // 3. Default SDK behaviour by action_type.
-        val actionData = parseActionData(data["actionData"] as? String)
-        val actionType = data["action_type"] as? String
+        // 3. Default SDK behaviour by actionType.
+        val actionData = parseActionData(notificationData["actionData"] as? String)
+        val actionType = notificationData["actionType"] as? String
         val performed = when (actionType) {
-            "open_web_page" -> openWebPage(context, actionData["url"] as? String)
-            "open_webview" -> openCampaignWebView(context, data, actionData)
-            "open_screen" -> {
+            "openWebPage" -> openWebPage(context, actionData["url"] as? String)
+            "openWebview" -> openCampaignWebView(context, notificationData, actionData)
+            "openScreen" -> {
                 val deepLink = actionData["deepLink"] as? String
                 if (!deepLink.isNullOrEmpty()) { AlgorithmX.openDeepLink(context, deepLink); true } else false
             }
-            "custom_action" -> {
+            "customAction" -> {
                 val customAction = actionData["action"] as? String
-                listener?.onCustomAction(customAction, data + ("parsedActionData" to actionData))
+                listener?.onCustomAction(customAction, notificationData + ("parsedActionData" to actionData))
                 true
             }
             else -> false // standard / null / unknown — no-op
         }
         // Tell the partner the SDK ran a default action for this tap (same as iOS).
-        if (performed && actionType != null) listener?.onActionHandled(actionType, data)
+        if (performed && actionType != null) listener?.onActionHandled(actionType, notificationData)
     }
 
     private fun trackOpened(data: Map<String, Any>) {
-        (data["algo_notification_id"] as? String)?.toIntOrNull()?.let { id ->
+        (data["algoNotificationId"] as? String)?.toIntOrNull()?.let { id ->
             AlgorithmX.updateNotificationStatus(id, AlgorithmX.NotificationEventStatus.OPENED)
         }
-        (data["algo_campaign_id"] as? String)?.let { campaignId ->
-            val variationId = (data["engage_variation_id"] as? String) ?: "default"
+        (data["algoCampaignId"] as? String)?.let { campaignId ->
+            val variationId = (data["engageVariationId"] as? String) ?: "default"
             AlgorithmX.trackCampaignInteraction(
                 campaignId,
                 variationId,
                 "click",
                 mapOf(
-                    "notification_type" to "push",
-                    "action" to ((data["action_type"] as? String) ?: "unknown")
+                    "notificationType" to "push",
+                    "action" to ((data["actionType"] as? String) ?: "unknown")
                 )
             )
         }
@@ -114,8 +119,8 @@ object NotificationActionRouter {
         actionData: Map<String, Any>
     ): Boolean {
         val url = actionData["url"] as? String ?: return false
-        val campaignId = data["algo_campaign_id"] as? String ?: return false
-        val variationId = (data["engage_variation_id"] as? String) ?: "default"
+        val campaignId = data["algoCampaignId"] as? String ?: return false
+        val variationId = (data["engageVariationId"] as? String) ?: "default"
         AlgorithmX.showWebView(context, campaignId, variationId, url, null)
         return true
     }

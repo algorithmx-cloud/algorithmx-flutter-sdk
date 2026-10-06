@@ -3,7 +3,7 @@
 //  AlgorithmXSDK
 //
 //  Mirrors the Android `NotificationActionRouter`. Single place that interprets
-//  `action_type` and routes to the right SDK / partner action.
+//  `actionType` and routes to the right SDK / partner action.
 //
 
 import Foundation
@@ -14,6 +14,7 @@ enum NotificationActionRouter {
     /// `trackOpen: false` when the tap was already tracked (an action button whose
     /// handler didn't handle it falls back to this default routing).
     static func route(data: [String: Any], trackOpen: Bool = true) {
+        let data = EngageNotificationService.normalizedPushData(data)
         // 1. Track open + click.
         if trackOpen { trackOpened(data: data) }
 
@@ -24,20 +25,20 @@ enum NotificationActionRouter {
 
         // 3. Default action handling.
         let actionData = parseActionData(data["actionData"] as? String)
-        let actionType = data["action_type"] as? String
+        let actionType = data["actionType"] as? String
         var performed = false
         switch actionType {
-        case "open_web_page":
+        case "openWebPage":
             performed = openExternalUrl(actionData["url"] as? String)
-        case "open_webview":
+        case "openWebview":
             performed = openCampaignWebView(data: data, actionData: actionData)
-        case "open_screen":
+        case "openScreen":
             if let deepLinkString = actionData["deepLink"] as? String,
                let url = URL(string: deepLinkString) {
                 _ = AlgorithmX.shared.openDeepLink(url: url)
                 performed = true
             }
-        case "custom_action":
+        case "customAction":
             let customAction = actionData["action"] as? String
             var enriched = data
             enriched["parsedActionData"] = actionData
@@ -53,19 +54,19 @@ enum NotificationActionRouter {
     }
 
     private static func trackOpened(data: [String: Any]) {
-        if let notifIdStr = data["algo_notification_id"] as? String,
+        if let notifIdStr = data["algoNotificationId"] as? String,
            let notifId = Int(notifIdStr) {
             AlgorithmX.shared.updateNotificationStatus(notificationId: notifId, status: .opened)
         }
-        if let campaignId = data["algo_campaign_id"] as? String {
-            let variationId = data["engage_variation_id"] as? String ?? "default"
+        if let campaignId = data["algoCampaignId"] as? String {
+            let variationId = data["engageVariationId"] as? String ?? "default"
             AlgorithmX.shared.trackCampaignInteraction(
                 campaignId: campaignId,
                 variationId: variationId,
                 interactionType: "click",
                 payload: [
-                    "notification_type": "push",
-                    "action": data["action_type"] ?? "unknown"
+                    "notificationType": "push",
+                    "action": data["actionType"] ?? "unknown"
                 ]
             )
         }
@@ -89,8 +90,8 @@ enum NotificationActionRouter {
 
     private static func openCampaignWebView(data: [String: Any], actionData: [String: Any]) -> Bool {
         guard let url = actionData["url"] as? String,
-              let campaignId = data["algo_campaign_id"] as? String else { return false }
-        let variationId = data["engage_variation_id"] as? String ?? "default"
+              let campaignId = data["algoCampaignId"] as? String else { return false }
+        let variationId = data["engageVariationId"] as? String ?? "default"
         AlgorithmX.shared.showWebView(
             campaignId: campaignId, variationId: variationId,
             url: url, dynamicContent: nil

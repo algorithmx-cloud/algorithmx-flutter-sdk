@@ -107,18 +107,19 @@ Push can be delivered when a Flutter engine is absent. The platform host
 therefore initializes the native SDK before forwarding a push:
 
 - Android `Application.onCreate` and `FirebaseMessagingService` call
-  `AlgorithmXFlutterPlugin.initializeForBackground(application, url)` before
+  `AlgorithmXFlutterPlugin.initializeForBackground(application, url, partnerId)` before
   `AlgorithmX.handleFcmMessage` or token registration. The Android bridge
   holds early tap callbacks until a Flutter engine attaches, with a bounded
   default-action timeout.
 - iOS `AppDelegate` calls
-  `AlgorithmXFlutterPlugin.initializeForBackground(apiBaseUrl: url)` before
+  `AlgorithmXFlutterPlugin.initializeForBackground(apiBaseUrl: url, partnerId: id)` before
   forwarding APNs and notification response delegate methods. The iOS bridge
   also holds early callbacks for up to thirty seconds while Flutter starts.
 
-The later Dart `initialize(apiBaseUrl: url)` uses the same native instance.
-Using different URLs is an error, because silently reinitializing would
-discard the existing queue and add duplicate lifecycle observers.
+The later Dart `initialize(apiBaseUrl: url, partnerId: id)` uses the same native
+instance. Using a different URL or partner ID is an error, because silently
+reinitializing would discard the existing queue and add duplicate lifecycle
+observers.
 
 The Android native SDK's lifecycle manager routes notification intents but
 does not drain the campaign queue on foreground transitions. The Flutter

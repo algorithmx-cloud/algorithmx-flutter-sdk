@@ -23,7 +23,7 @@ void main() {
     sdk.clearHandlers();
   });
 
-  test('initialize forwards a named URL argument', () async {
+  test('initialize forwards the URL and partner ID', () async {
     MethodCall? received;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -31,10 +31,16 @@ void main() {
       return null;
     });
 
-    await sdk.initialize(apiBaseUrl: 'https://example.com');
+    await sdk.initialize(
+      apiBaseUrl: 'https://example.com',
+      partnerId: 'partner-1',
+    );
 
     expect(received?.method, 'initialize');
-    expect(received?.arguments, {'apiBaseUrl': 'https://example.com'});
+    expect(received?.arguments, {
+      'apiBaseUrl': 'https://example.com',
+      'partnerId': 'partner-1',
+    });
   });
 
   test(
@@ -48,9 +54,10 @@ void main() {
       });
 
       await sdk.trackEvent(
-        'purchase',
+        'Purchase_COMPLETED',
         properties: {
           'amount': 19.95,
+          'Custom_Key': {'product_id': 'A1'},
           'items': [
             {'sku': 'A1', 'quantity': 1},
           ],
@@ -62,15 +69,17 @@ void main() {
         interactionType: 'click',
         payload: {'source': 'flutter'},
         sessionId: 'session-1',
-        endpoint: '/api/v1/tracks/algo_view_interact',
+        endpoint: '/api/v1/tracks/algoViewInteract',
       );
 
       expect(calls.map((call) => call.method), [
         'trackEvent',
         'trackCampaignInteraction',
       ]);
+      expect((calls.first.arguments as Map)['name'], 'Purchase_COMPLETED');
       expect((calls.first.arguments as Map)['properties'], {
         'amount': 19.95,
+        'Custom_Key': {'product_id': 'A1'},
         'items': [
           {'sku': 'A1', 'quantity': 1},
         ],
@@ -78,7 +87,7 @@ void main() {
       expect((calls.last.arguments as Map)['sessionId'], 'session-1');
       expect(
         (calls.last.arguments as Map)['endpoint'],
-        '/api/v1/tracks/algo_view_interact',
+        '/api/v1/tracks/algoViewInteract',
       );
     },
   );
@@ -108,12 +117,12 @@ void main() {
   test('notification click awaits the app decision', () async {
     sdk.onNotificationClick = (data) async {
       await Future<void>.delayed(Duration.zero);
-      return data['action_type'] == 'open_screen';
+      return data['actionType'] == 'openScreen';
     };
 
     final result = await sdk.handleNativeCall(
       const MethodCall('onNotificationClick', {
-        'data': {'action_type': 'open_screen'},
+        'data': {'actionType': 'openScreen'},
       }),
     );
 
@@ -124,9 +133,9 @@ void main() {
     final result = await sdk.handleNativeCall(
       const MethodCall('onActionButtonClicked', {
         'buttonId': 'view',
-        'actionText': 'view_offer',
+        'actionText': 'viewOffer',
         'title': 'View offer',
-        'notificationData': {'algo_campaign_id': '4'},
+        'notificationData': {'algoCampaignId': '4'},
       }),
     );
 

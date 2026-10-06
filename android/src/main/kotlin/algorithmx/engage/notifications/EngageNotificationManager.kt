@@ -13,6 +13,7 @@ import algorithmx.engage.activities.NotificationClickActivity
 import algorithmx.engage.core.AlgorithmX
 import algorithmx.engage.receivers.NotificationActionReceiver
 import algorithmx.engage.utils.SdkLog
+import algorithmx.engage.utils.SdkPayload
 import java.net.URL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +24,7 @@ import org.json.JSONArray
 /**
  * Builds and displays the visual notification for `processNormalNotification`.
  * Handles BigPicture image attachment and dynamic action buttons parsed from
- * the `action_buttons` JSON array in the FCM payload.
+ * the `actionButtons` JSON array in the FCM payload.
  */
 class EngageNotificationManager {
 
@@ -33,23 +34,24 @@ class EngageNotificationManager {
         title: String? = null,
         body: String? = null
     ) {
-        val nTitle = title ?: data["title"] ?: "Notification"
-        val nBody = body ?: data["body"] ?: ""
+        val notificationData = SdkPayload.notification(data)
+        val nTitle = title ?: notificationData["title"] ?: "Notification"
+        val nBody = body ?: notificationData["body"] ?: ""
         // Same image keys as the iOS Notification Service Extension.
-        val imageUrl = data["image"] ?: data["imageUrl"] ?: data["image_url"] ?: data["engage_meta_image_url"]
+        val imageUrl = notificationData["image"] ?: notificationData["imageUrl"] ?: notificationData["engageMetaImageUrl"]
         // One Android notification per AlgorithmX notification id (no accidental overwrites).
-        val notificationId = data["algo_notification_id"]?.toIntOrNull()?.let { NOTIFICATION_ID_BASE + it }
+        val notificationId = notificationData["algoNotificationId"]?.toIntOrNull()?.let { NOTIFICATION_ID_BASE + it }
             ?: (NOTIFICATION_ID_BASE + System.currentTimeMillis().toInt() % 10000)
 
         if (!imageUrl.isNullOrEmpty()) {
             CoroutineScope(Dispatchers.IO).launch {
                 val bitmap = try { loadImageFromUrl(imageUrl) } catch (e: Exception) { null }
                 withContext(Dispatchers.Main) {
-                    showNotification(context, data, nTitle, nBody, bitmap, notificationId)
+                    showNotification(context, notificationData, nTitle, nBody, bitmap, notificationId)
                 }
             }
         } else {
-            showNotification(context, data, nTitle, nBody, null, notificationId)
+            showNotification(context, notificationData, nTitle, nBody, null, notificationId)
         }
     }
 
@@ -91,15 +93,15 @@ class EngageNotificationManager {
         val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         mgr.notify(notificationId, builder.build())
 
-        data["algo_campaign_id"]?.let { campaignId ->
-            val variationId = data["engage_variation_id"] ?: "default"
+        data["algoCampaignId"]?.let { campaignId ->
+            val variationId = data["engageVariationId"] ?: "default"
             AlgorithmX.trackCampaignInteraction(
                 campaignId, variationId, "impression",
                 mapOf(
-                    "notification_type" to "push",
+                    "notificationType" to "push",
                     "title" to title,
                     "body" to body,
-                    "has_image" to (bitmap != null)
+                    "hasImage" to (bitmap != null)
                 )
             )
         }
@@ -131,16 +133,17 @@ class EngageNotificationManager {
         data: Map<String, String>,
         notificationId: Int
     ) {
-        val buttonsJson = data["action_buttons"] ?: return
+        val buttonsJson = data["actionButtons"] ?: return
         if (buttonsJson.isBlank() || buttonsJson == "[]") return
 
         try {
             // Same rules as iOS: at most 3 buttons (all Android shows), `title` and
-            // `action_text` required, `id` defaults to action_<index>.
+            // `actionText` required, `id` defaults to action_<index>.
             val arr = JSONArray(buttonsJson)
             for (i in 0 until minOf(arr.length(), MAX_ACTION_BUTTONS)) {
                 val obj = arr.optJSONObject(i) ?: continue
-                val actionText = obj.optString("action_text").takeIf { it.isNotEmpty() } ?: continue
+                val actionTextKey = if (obj.has("actionText")) "actionText" else "action_text"
+                val actionText = obj.optString(actionTextKey).takeIf { it.isNotEmpty() } ?: continue
                 val title = obj.optString("title").takeIf { it.isNotEmpty() } ?: continue
                 val buttonId = obj.optString("id").takeIf { it.isNotEmpty() } ?: "action_$i"
 

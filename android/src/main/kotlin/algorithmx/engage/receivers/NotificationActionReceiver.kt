@@ -7,12 +7,13 @@ import android.content.Intent
 import algorithmx.engage.core.AlgorithmX
 import algorithmx.engage.notifications.NotificationActionRouter
 import algorithmx.engage.utils.SdkLog
+import algorithmx.engage.utils.SdkPayload
 
 /**
  * Receives action-button taps (forwarded by NotificationClickActivity), tracks
  * the interaction, and forwards the click to the partner-supplied
  * ActionButtonHandler. If no handler handled it, the notification's own
- * `action_type` runs, like iOS.
+ * `actionType` runs, like iOS.
  */
 class NotificationActionReceiver : BroadcastReceiver() {
 
@@ -27,10 +28,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val buttonTitle = intent.getStringExtra(EXTRA_BUTTON_TITLE) ?: ""
         val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
 
-        val notificationData = mutableMapOf<String, Any>()
+        val rawNotificationData = mutableMapOf<String, Any>()
         intent.extras?.let { bundle ->
-            for (key in bundle.keySet()) bundle.get(key)?.let { notificationData[key] = it }
+            for (key in bundle.keySet()) bundle.get(key)?.let { rawNotificationData[key] = it }
         }
+        val notificationData = SdkPayload.notification(rawNotificationData)
 
         if (notificationId != -1) {
             try {
@@ -41,23 +43,23 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
         }
 
-        (notificationData["algo_campaign_id"] as? String)?.let { campaignId ->
-            val variationId = (notificationData["engage_variation_id"] as? String) ?: "default"
+        (notificationData["algoCampaignId"] as? String)?.let { campaignId ->
+            val variationId = (notificationData["engageVariationId"] as? String) ?: "default"
             AlgorithmX.trackCampaignInteraction(
                 campaignId,
                 variationId,
                 "click",
                 mapOf(
-                    "notification_type" to "push",
-                    "interaction_type" to "action_button",
-                    "button_id" to buttonId,
-                    "action_text" to actionText,
-                    "button_title" to buttonTitle
+                    "notificationType" to "push",
+                    "interactionType" to "actionButton",
+                    "buttonId" to buttonId,
+                    "actionText" to actionText,
+                    "buttonTitle" to buttonTitle
                 )
             )
         }
 
-        (notificationData["algo_notification_id"] as? String)?.toIntOrNull()?.let { id ->
+        (notificationData["algoNotificationId"] as? String)?.toIntOrNull()?.let { id ->
             AlgorithmX.updateNotificationStatus(id, AlgorithmX.NotificationEventStatus.OPENED)
         }
 

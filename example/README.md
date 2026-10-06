@@ -1,5 +1,11 @@
 # AlgorithmX Flutter example
 
+> **Recommended naming: camelCase**
+>
+> We recommend `camelCase` for custom event names and payload keys, such as `addToCart` and `productId`. This is a recommendation only: the SDK does not enforce or normalize custom names or keys. Titles can use natural text in any language.
+>
+> SDK-defined fields, built-in events, and action types use the documented camelCase names. Legacy SDK push keys and built-in event/action names are still accepted on input; outgoing SDK tracking uses the canonical names. Your backend must accept `/api/v1/tracks/algoViewInteract`, with camelCase interaction fields and `payload` as a JSON string.
+
 This small app shows initialization, event tracking, token registration,
 campaign testing, and all native callbacks. The screen intentionally has no
 Firebase dependency so it can be used with either a real Firebase project or

@@ -56,6 +56,7 @@ class AlgorithmXFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         private val callbackHandler = Handler(Looper.getMainLooper())
         private var nativeInitialized = false
         private var initializedApiUrl: String? = null
+        private var initializedPartnerId: String? = null
         private var backgroundApplication: Application? = null
         // Multiple Flutter engines may initialize this process-wide SDK. The
         // latest ready engine receives callbacks; when it detaches, an earlier
@@ -256,26 +257,32 @@ class AlgorithmXFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
          * Initialize the native SDK from a FirebaseMessagingService before
          * `AlgorithmX.handleFcmMessage` or `registerDeviceToken` is called.
          *
-         * This is safe to call again with the same URL. The Flutter `initialize`
-         * method also calls it, so it will not reset an identified user when a
-         * background message started the process first. Use the same API URL in
-         * native and Dart startup code. No Flutter engine or Activity is needed.
+         * This is safe to call again with the same URL and partner ID. The Flutter
+         * `initialize` method also calls it, so it will not reset an identified user
+         * when a background message started the process first. Use the same API URL
+         * and partner ID in native and Dart startup code. No Flutter engine or
+         * Activity is needed.
          */
         @JvmStatic
-        fun initializeForBackground(application: Application, apiBaseUrl: String) {
+        fun initializeForBackground(application: Application, apiBaseUrl: String, partnerId: String) {
             val normalizedUrl = apiBaseUrl.trimEnd('/')
             require(normalizedUrl.isNotBlank()) { "apiBaseUrl must not be blank" }
+            require(partnerId.isNotBlank()) { "partnerId must not be blank" }
             synchronized(initializationLock) {
                 backgroundApplication = application
                 if (nativeInitialized) {
                     require(initializedApiUrl == normalizedUrl) {
                         "AlgorithmX is already initialized with a different apiBaseUrl"
                     }
+                    require(initializedPartnerId == partnerId) {
+                        "AlgorithmX is already initialized with a different partnerId"
+                    }
                     installProcessListeners()
                     return
                 }
-                AlgorithmX.initialize(application, normalizedUrl)
+                AlgorithmX.initialize(application, normalizedUrl, partnerId)
                 initializedApiUrl = normalizedUrl
+                initializedPartnerId = partnerId
                 nativeInitialized = true
                 installProcessListeners()
             }
@@ -298,6 +305,7 @@ class AlgorithmXFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 if (nativeInitialized) AlgorithmX.destroy()
                 nativeInitialized = false
                 initializedApiUrl = null
+                initializedPartnerId = null
                 backgroundApplication = null
             }
         }
@@ -379,7 +387,9 @@ class AlgorithmXFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             val args = Arguments(call)
             when (call.method) {
                 "initialize" -> {
-                    initializeForBackground(requiredApplication(), args.string("apiBaseUrl"))
+                    initializeForBackground(
+                        requiredApplication(), args.string("apiBaseUrl"), args.string("partnerId")
+                    )
                     activate(this)
                     activity?.let(::reportForegroundIfNeeded)
                     result.success(null)

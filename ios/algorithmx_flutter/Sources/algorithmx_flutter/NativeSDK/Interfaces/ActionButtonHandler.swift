@@ -14,7 +14,7 @@ import Foundation
     /// Called when an action button on a notification is clicked
     /// - Parameters:
     ///   - buttonId: Unique ID of the button that was clicked
-    ///   - actionText: Action identifier (e.g., "view_offer", "dismiss")
+    ///   - actionText: Action identifier (e.g., "viewOffer", "dismiss")
     ///   - title: Button title/label shown to the user
     ///   - notificationData: Complete notification data including campaign info
     /// - Returns: `true` if you handled the action, `false` to let SDK handle it
@@ -28,7 +28,7 @@ import Foundation
     ///     notificationData: [String: Any]
     /// ) -> Bool {
     ///     switch actionText {
-    ///     case "view_offer":
+    ///     case "viewOffer":
     ///         navigateToOfferScreen()
     ///         return true
     ///     case "dismiss":

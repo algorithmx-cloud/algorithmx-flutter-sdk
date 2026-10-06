@@ -11,6 +11,10 @@ class NetworkClient {
 
     static let shared = NetworkClient()
 
+    /// Sent as the `x-partner-id` header on every request. Set by `AlgorithmX.initialize`.
+    var partnerId: String = ""
+    private static let partnerIdHeader = "x-partner-id"
+
     private init() {}
 
     // MARK: - POST Request
@@ -30,6 +34,7 @@ class NetworkClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -87,6 +92,7 @@ class NetworkClient {
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -137,6 +143,7 @@ class NetworkClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {

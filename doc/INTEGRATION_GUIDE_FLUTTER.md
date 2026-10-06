@@ -32,7 +32,7 @@ dependencies:
   flutter:
     sdk: flutter
   algorithmx_flutter:
-    path: /absolute/path/to/in-app-sdks/platforms/flutter/flutter-sdk  # or: algorithmx_flutter: ^1.0.0 from pub.dev
+    path: /absolute/path/to/in-app-sdks/platforms/flutter/flutter-sdk  # or: algorithmx_flutter: ^1.0.1 from pub.dev
 ```
 
 Then run these commands in the **Flutter app's** directory:
@@ -98,6 +98,7 @@ Future<void> main() async {
 
   await sdk.initialize(
     apiBaseUrl: 'https://your-algorithmx-endpoint.example.com',
+    partnerId: 'your-partner-id',
   );
   runApp(const MyApp());
 }
@@ -106,7 +107,8 @@ Future<void> main() async {
 `AlgorithmX.instance` is the Dart singleton. `initialize` registers the native
 bridge and initializes the native SDK in the current process. Call it before
 tracking or querying queue state. If the native push service already initialized
-the same process with the same URL, the bridge reuses that native instance.
+the same process with the same URL and partner ID, the bridge reuses that native
+instance. The SDK sends the partner ID in the `x-partner-id` header of every request.
 
 Identify only after you know the app's user ID:
 
@@ -199,11 +201,12 @@ import com.google.firebase.messaging.FirebaseMessaging
 
 internal const val ALGORITHM_X_URL =
     "https://your-algorithmx-endpoint.example.com"
+internal const val ALGORITHM_X_PARTNER_ID = "your-partner-id"
 
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        AlgorithmXFlutterPlugin.initializeForBackground(this, ALGORITHM_X_URL)
+        AlgorithmXFlutterPlugin.initializeForBackground(this, ALGORITHM_X_URL, ALGORITHM_X_PARTNER_ID)
 
         // onNewToken only runs when the token changes. Register the current
         // token on every fresh app install/start as well.
@@ -232,7 +235,9 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(message)
 
         // Dart might not have started yet. Initialize the native SDK first.
-        AlgorithmXFlutterPlugin.initializeForBackground(application, ALGORITHM_X_URL)
+        AlgorithmXFlutterPlugin.initializeForBackground(
+            application, ALGORITHM_X_URL, ALGORITHM_X_PARTNER_ID
+        )
         AlgorithmX.handleFcmMessage(
             applicationContext,
             message.data,
@@ -243,7 +248,9 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        AlgorithmXFlutterPlugin.initializeForBackground(application, ALGORITHM_X_URL)
+        AlgorithmXFlutterPlugin.initializeForBackground(
+            application, ALGORITHM_X_URL, ALGORITHM_X_PARTNER_ID
+        )
         AlgorithmX.registerDeviceToken(token)
     }
 }
@@ -293,8 +300,8 @@ the native SDK can display it and record its interaction events.
 
 Use your app's existing `AppDelegate.swift`; merge the calls below with code
 already there. For a standard Flutter Runner target the class extends
-`FlutterAppDelegate`. Replace the URL with **exactly** the one passed to Dart
-`initialize`.
+`FlutterAppDelegate`. Replace the URL and partner ID with **exactly** the ones
+passed to Dart `initialize`.
 
 ```swift
 import Flutter
@@ -306,6 +313,7 @@ import algorithmx_flutter
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
     private let algorithmXURL =
         "https://your-algorithmx-endpoint.example.com"
+    private let algorithmXPartnerID = "your-partner-id"
 
     override func application(
         _ application: UIApplication,
@@ -315,7 +323,8 @@ import algorithmx_flutter
         // Pass the App Group shared with your Notification Service Extension so it
         // can report delivered + impression (see the native iOS guide, §8.3).
         AlgorithmXFlutterPlugin.initializeForBackground(
-            apiBaseUrl: algorithmXURL, appGroup: "group.com.yourcompany.yourapp"
+            apiBaseUrl: algorithmXURL, partnerId: algorithmXPartnerID,
+            appGroup: "group.com.yourcompany.yourapp"
         )
         UNUserNotificationCenter.current().delegate = self
 

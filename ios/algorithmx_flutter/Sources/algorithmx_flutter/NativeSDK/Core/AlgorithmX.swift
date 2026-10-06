@@ -4,7 +4,7 @@
 //
 //  Public entry point of the AlgorithmX in-app SDK. Mirrors the Android
 //  `AlgorithmX` object: same method names, same payload shapes, same
-//  notification payload keys (engage_action, algo_campaign_id, etc.).
+//  notification payload keys (engageAction, algoCampaignId, etc.).
 //
 
 import Foundation
@@ -47,9 +47,11 @@ import UserNotifications
 
     // MARK: - Initialization
 
-    /// Safe to call more than once: later calls only update the base URL.
-    @objc public func initialize(apiBaseUrl: String) {
+    /// Safe to call more than once: later calls only update the base URL and partner ID.
+    /// `partnerId` is sent as the `x-partner-id` header on every request.
+    @objc public func initialize(apiBaseUrl: String, partnerId: String) {
         self.apiUrl = apiBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        NetworkClient.shared.partnerId = partnerId
         if initialized { shareConfigWithExtension(); return }
         initialized = true
         self.dispatcher = EventDispatcher.shared
@@ -79,14 +81,14 @@ import UserNotifications
     }
 
     /**
-     Same as `initialize(apiBaseUrl:)`, and shares the backend URL and user id with
-     the Notification Service Extension through the App Group, so the extension can
-     report "delivered" and the impression of visible notifications (like Android).
-     Pass the same App Group to `EngageNotificationService.processNotification`.
+     Same as `initialize(apiBaseUrl:partnerId:)`, and shares the backend URL, partner ID
+     and user id with the Notification Service Extension through the App Group, so the
+     extension can report "delivered" and the impression of visible notifications (like
+     Android). Pass the same App Group to `EngageNotificationService.processNotification`.
      */
-    @objc public func initialize(apiBaseUrl: String, appGroup: String) {
+    @objc public func initialize(apiBaseUrl: String, partnerId: String, appGroup: String) {
         self.appGroup = appGroup
-        initialize(apiBaseUrl: apiBaseUrl)
+        initialize(apiBaseUrl: apiBaseUrl, partnerId: partnerId)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -97,6 +99,7 @@ import UserNotifications
     private func shareConfigWithExtension() {
         guard let appGroup = appGroup, let defaults = UserDefaults(suiteName: appGroup) else { return }
         defaults.set(apiUrl, forKey: EngageNotificationService.sharedApiBaseUrlKey)
+        defaults.set(NetworkClient.shared.partnerId, forKey: EngageNotificationService.sharedPartnerIdKey)
         defaults.set(resolveUserId(), forKey: EngageNotificationService.sharedFingerprintKey)
     }
 
@@ -172,15 +175,15 @@ import UserNotifications
         }
 
         var body: [String: Any] = [
-            "FingerprintDevice": userId,
-            "CampaignId": Int(campaignId) ?? 0,
-            "VariationId": Int(variationId) ?? 0,
-            "InteractionType": interactionType
+            "fingerprintDevice": userId,
+            "campaignId": Int(campaignId) ?? 0,
+            "variationId": Int(variationId) ?? 0,
+            "interactionType": interactionType
         ]
-        if let payloadString = payloadString { body["Payload"] = payloadString }
+        if let payloadString = payloadString { body["payload"] = payloadString }
         if let sessionId = sessionId { body["sessionId"] = sessionId }
 
-        let path = endpoint ?? "/api/v1/tracks/algo_view_interact"
+        let path = endpoint ?? "/api/v1/tracks/algoViewInteract"
         dispatcher?.send(endpoint: "\(apiUrl)\(path)", method: "POST", payload: body)
 
         if let listener = campaignInteractionListener {
@@ -208,7 +211,7 @@ import UserNotifications
         ]
         if let err = errorMessage { body["errorMessage"] = err }
         dispatcher?.send(
-            endpoint: "\(apiUrl)/api/v1/in-app-push-events/device/status",
+            endpoint: "\(apiUrl)/api/v1/inAppPushEvents/device/status",
             method: "PUT", payload: body
         )
     }
@@ -222,7 +225,7 @@ import UserNotifications
             "token": token,
             "platform": "ios"
         ]
-        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/notification-tokens", method: "POST", payload: body)
+        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/notificationTokens", method: "POST", payload: body)
     }
 
     // MARK: - Push notification handling
@@ -236,19 +239,20 @@ import UserNotifications
     /**
      Unified notification entry point. Mirrors Android `handleFcmMessage`.
      Routes silent webview triggers vs. visual notifications based on
-     `engage_action`. The completion handler must be called by iOS contract.
+     `engageAction`. The completion handler must be called by iOS contract.
      */
     @objc public func handleNotification(
         userInfo: [AnyHashable: Any],
         completionHandler: @escaping () -> Void
     ) {
-        guard let action = userInfo["engage_action"] as? String else {
+        let userInfo = EngageNotificationService.normalizedUserInfo(userInfo)
+        guard let action = userInfo["engageAction"] as? String else {
             completionHandler(); return
         }
         switch action {
-        case "algo_trigger_webview":
+        case "algoTriggerWebview":
             processSilentNotification(userInfo: userInfo)
-        case "algo_show_notification":
+        case "algoShowNotification":
             // iOS displays visual notifications via the OS automatically.
             break
         default:
@@ -258,17 +262,17 @@ import UserNotifications
     }
 
     private func processSilentNotification(userInfo: [AnyHashable: Any]) {
-        guard let campaignId = userInfo["algo_campaign_id"] as? String, !campaignId.isEmpty,
-              let webviewUrl = userInfo["engage_webview_url"] as? String, !webviewUrl.isEmpty else { return }
+        guard let campaignId = userInfo["algoCampaignId"] as? String, !campaignId.isEmpty,
+              let webviewUrl = userInfo["engageWebviewUrl"] as? String, !webviewUrl.isEmpty else { return }
         // Same as Android: a missing variation id defaults to "0".
-        let variationId = userInfo["engage_variation_id"] as? String ?? "0"
+        let variationId = userInfo["engageVariationId"] as? String ?? "0"
 
-        if let userIdFromPayload = userInfo["engage_user_id"] as? String, !userIdFromPayload.isEmpty {
+        if let userIdFromPayload = userInfo["engageUserId"] as? String, !userIdFromPayload.isEmpty {
             engageUserId = userIdFromPayload
         }
 
         var dynamicContent: [String: Any]?
-        if let str = userInfo["engage_dynamic_content"] as? String,
+        if let str = userInfo["engageDynamicContent"] as? String,
            let data = str.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             dynamicContent = json
@@ -283,10 +287,10 @@ import UserNotifications
 
         let userId = resolveUserId()
 
-        trackEvent("silent_notification_received", properties: [
+        trackEvent("silentNotificationReceived", properties: [
             "campaignId": campaignId,
             "variationId": variationId,
-            "action": "algo_trigger_webview",
+            "action": "algoTriggerWebview",
             "hasDynamicContent": dynamicContent != nil,
             "hasConfigs": true,
             "priority": displayRule.priority
@@ -334,6 +338,7 @@ import UserNotifications
 
     @objc public func handleNotificationClick(userInfo: [AnyHashable: Any]) {
         guard isAlgorithmXPush(userInfo: userInfo) else { return }
+        let userInfo = EngageNotificationService.normalizedUserInfo(userInfo)
         var data: [String: Any] = [:]
         for (k, v) in userInfo { if let k = k as? String { data[k] = v } }
         NotificationActionRouter.route(data: data)
@@ -341,8 +346,9 @@ import UserNotifications
 
     /// Same as Android: always track opened + the button click, then give the
     /// partner's handler the button; if it doesn't handle it, the notification's
-    /// own `action_type` runs.
+    /// own `actionType` runs.
     private func handleActionButton(buttonId: String, userInfo: [AnyHashable: Any]) {
+        let userInfo = EngageNotificationService.normalizedUserInfo(userInfo)
         var data: [String: Any] = [:]
         for (k, v) in userInfo { if let k = k as? String { data[k] = v } }
 
@@ -351,23 +357,23 @@ import UserNotifications
             (button["id"] as? String ?? "action_\(index)") == buttonId
         })?.element
 
-        let actionText = button?["action_text"] as? String ?? ""
+        let actionText = button?["actionText"] as? String ?? ""
         let title = button?["title"] as? String ?? ""
 
-        if let notifIdStr = data["algo_notification_id"] as? String, let notifId = Int(notifIdStr) {
+        if let notifIdStr = data["algoNotificationId"] as? String, let notifId = Int(notifIdStr) {
             updateNotificationStatus(notificationId: notifId, status: .opened)
         }
-        if let campaignId = data["algo_campaign_id"] as? String {
+        if let campaignId = data["algoCampaignId"] as? String {
             trackCampaignInteraction(
                 campaignId: campaignId,
-                variationId: data["engage_variation_id"] as? String ?? "default",
+                variationId: data["engageVariationId"] as? String ?? "default",
                 interactionType: "click",
                 payload: [
-                    "notification_type": "push",
-                    "interaction_type": "action_button",
-                    "button_id": buttonId,
-                    "action_text": actionText,
-                    "button_title": title
+                    "notificationType": "push",
+                    "interactionType": "actionButton",
+                    "buttonId": buttonId,
+                    "actionText": actionText,
+                    "buttonTitle": title
                 ]
             )
         }
@@ -379,12 +385,12 @@ import UserNotifications
     }
 
     private func parseActionButtons(from userInfo: [AnyHashable: Any]) -> [[String: Any]] {
-        if let s = userInfo["action_buttons"] as? String,
+        if let s = userInfo["actionButtons"] as? String,
            let data = s.data(using: .utf8),
            let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             return arr
         }
-        if let arr = userInfo["action_buttons"] as? [[String: Any]] { return arr }
+        if let arr = userInfo["actionButtons"] as? [[String: Any]] { return arr }
         return []
     }
 
