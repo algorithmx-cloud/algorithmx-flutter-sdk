@@ -27,10 +27,11 @@ object NetworkClient {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    fun postJson(url: String, body: Any) {
+    fun postJson(url: String, body: Any, headers: Map<String, String> = emptyMap()) {
         try {
             val req = Request.Builder().url(url)
                 .header(PARTNER_ID_HEADER, partnerId)
+                .apply { headers.forEach { (name, value) -> header(name, value) } }
                 .post(JsonUtil.toJson(body).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { res ->

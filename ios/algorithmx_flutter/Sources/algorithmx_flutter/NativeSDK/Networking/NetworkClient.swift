@@ -15,11 +15,13 @@ class NetworkClient {
     var partnerId: String = ""
     private static let partnerIdHeader = "x-partner-id"
 
+    var session = URLSession.shared
+
     private init() {}
 
     // MARK: - POST Request
     func postJson(
-        endpoint: String, payload: [String: Any],
+        endpoint: String, payload: Any, headers: [String: String] = [:],
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         guard let url = URL(string: endpoint) else {
@@ -35,6 +37,7 @@ class NetworkClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
+        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -43,7 +46,7 @@ class NetworkClient {
             return
         }
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        session.dataTask(with: request) { data, response, error in
             if let error = error {
                 SdkLog.error("POST \(endpoint) failed: \(error.localizedDescription)")
                 completion(.failure(error))
@@ -101,7 +104,7 @@ class NetworkClient {
             return
         }
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        session.dataTask(with: request) { data, response, error in
             if let error = error {
                 SdkLog.error("PUT \(endpoint) failed: \(error.localizedDescription)")
                 completion(.failure(error))
@@ -145,7 +148,7 @@ class NetworkClient {
         request.httpMethod = "GET"
         request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        session.dataTask(with: request) { data, response, error in
             if let error = error {
                 SdkLog.error("GET \(endpoint) failed: \(error.localizedDescription)")
                 completion(.failure(error))

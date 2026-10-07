@@ -11,6 +11,10 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import androidx.core.app.NotificationCompat
 import algorithmx.engage.interfaces.AlgoWebViewListener
 import algorithmx.engage.interfaces.NotificationClickListener
@@ -177,13 +181,18 @@ object AlgorithmX {
 
     fun trackEvent(name: String, properties: Map<String, Any>? = null) {
         val userId = resolveUserId()
-        val body = mutableMapOf<String, Any>(
-            "event" to name,
-            "fingerprintDevice" to userId,
-            "timestamp" to System.currentTimeMillis()
+        val timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+        val body = mapOf<String, Any>(
+            "eventType" to name,
+            "data" to (properties ?: emptyMap<String, Any>()),
+            "timestamp" to timestamp
         )
-        properties?.let { body["payload"] = it }
-        eventDispatcher?.send("$apiUrl/api/v1/tracks/$name", "POST", body)
+        eventDispatcher?.send(
+            "$apiUrl/api/v1/Event/Log", "POST", listOf(body),
+            mapOf("X-Anonymous-Id" to userId)
+        )
     }
 
     fun trackCampaignInteraction(

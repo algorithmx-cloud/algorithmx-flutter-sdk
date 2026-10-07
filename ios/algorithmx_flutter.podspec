@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'algorithmx_flutter'
-  s.version          = '1.0.2'
+  s.version          = '1.0.3'
   s.summary          = 'Flutter bridge for the native AlgorithmX engagement SDK.'
   s.description      = 'Provides the full AlgorithmX iOS SDK through Flutter method channels.'
   s.homepage         = 'https://github.com/algorithmx-cloud/algorithmx-flutter-sdk'

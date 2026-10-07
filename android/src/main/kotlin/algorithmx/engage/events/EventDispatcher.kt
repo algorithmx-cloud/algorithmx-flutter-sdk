@@ -23,16 +23,19 @@ class EventDispatcher(private val context: Context) {
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    fun send(endpoint: String, method: String = "POST", payload: Map<String, Any>? = null) {
+    fun send(
+        endpoint: String, method: String = "POST", payload: Any? = null,
+        headers: Map<String, String> = emptyMap()
+    ) {
         if (!isNetworkAvailable()) {
             SdkLog.w(TAG, "Network unavailable; dropping request to $endpoint")
             return
         }
         scope.launch {
             try {
-                val body = payload ?: emptyMap()
+                val body = payload ?: emptyMap<String, Any>()
                 when (method) {
-                    "POST" -> NetworkClient.postJson(endpoint, body)
+                    "POST" -> NetworkClient.postJson(endpoint, body, headers)
                     "PUT" -> NetworkClient.putJson(endpoint, body)
                     "GET" -> NetworkClient.getJson(endpoint)
                     else -> SdkLog.e(TAG, "Unsupported method: $method")

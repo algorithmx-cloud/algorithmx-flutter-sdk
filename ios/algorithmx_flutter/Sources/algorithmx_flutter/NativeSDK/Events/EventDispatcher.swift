@@ -27,7 +27,10 @@ final class EventDispatcher {
 
     deinit { monitor.cancel() }
 
-    func send(endpoint: String, method: String = "POST", payload: [String: Any]?) {
+    func send(
+        endpoint: String, method: String = "POST", payload: Any?,
+        headers: [String: String] = [:]
+    ) {
         guard isOnline else {
             SdkLog.debug("Network unavailable; dropping request to \(endpoint)")
             return
@@ -35,9 +38,9 @@ final class EventDispatcher {
 
         switch method {
         case "POST":
-            NetworkClient.shared.postJson(endpoint: endpoint, payload: payload ?? [:]) { _ in }
+            NetworkClient.shared.postJson(endpoint: endpoint, payload: payload ?? [:], headers: headers) { _ in }
         case "PUT":
-            NetworkClient.shared.putJson(endpoint: endpoint, payload: payload ?? [:]) { _ in }
+            NetworkClient.shared.putJson(endpoint: endpoint, payload: payload as? [String: Any] ?? [:]) { _ in }
         case "GET":
             NetworkClient.shared.getJson(endpoint: endpoint) { _ in }
         default:

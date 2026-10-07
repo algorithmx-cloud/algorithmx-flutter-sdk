@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'algorithmx.engage.flutter'
-version = '1.0.2'
+version = '1.0.3'
 
 android {
     // Vendored Kotlin sources import algorithmx.engage.R for layouts/styles.

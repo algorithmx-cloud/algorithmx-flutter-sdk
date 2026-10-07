@@ -146,15 +146,24 @@ import UserNotifications
     // MARK: - Event tracking
 
     @objc public func trackEvent(_ name: String, properties: [String: Any]? = nil) {
+        let request = makeEventLogRequest(name, properties: properties)
+        dispatcher?.send(
+            endpoint: "\(apiUrl)/api/v1/Event/Log", method: "POST", payload: request.payload,
+            headers: request.headers
+        )
+    }
+
+    func makeEventLogRequest(_ name: String, properties: [String: Any]?)
+        -> (payload: [[String: Any]], headers: [String: String]) {
         let userId = resolveUserId()
-        let timestampMs = Int64(Date().timeIntervalSince1970 * 1000)
-        var body: [String: Any] = [
-            "event": name,
-            "fingerprintDevice": userId,
-            "timestamp": timestampMs
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let body: [String: Any] = [
+            "eventType": name,
+            "data": properties ?? [:],
+            "timestamp": formatter.string(from: Date())
         ]
-        if let properties = properties { body["payload"] = properties }
-        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/tracks/\(name)", method: "POST", payload: body)
+        return ([body], ["X-Anonymous-Id": userId])
     }
 
     @objc public func trackCampaignInteraction(
