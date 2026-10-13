@@ -56,6 +56,13 @@ class NetworkClient {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             SdkLog.debug("POST status=\(status) url=\(endpoint)")
 
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                SdkLog.error("HTTP \(status) from \(endpoint)")
+                completion(.failure(NSError(domain: "AlgorithmX", code: status,
+                    userInfo: [NSLocalizedDescriptionKey: "Backend returned HTTP \(status)"])))
+                return
+            }
             guard let data = data else {
                 completion(
                     .failure(
@@ -80,7 +87,7 @@ class NetworkClient {
 
     // MARK: - PUT Request
     func putJson(
-        endpoint: String, payload: [String: Any],
+        endpoint: String, payload: [String: Any], headers: [String: String] = [:],
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         guard let url = URL(string: endpoint) else {
@@ -96,6 +103,7 @@ class NetworkClient {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(partnerId, forHTTPHeaderField: Self.partnerIdHeader)
+        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -112,6 +120,13 @@ class NetworkClient {
             }
             SdkLog.debug("PUT status=\((response as? HTTPURLResponse)?.statusCode ?? -1) url=\(endpoint)")
 
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                SdkLog.error("HTTP \(status) from \(endpoint)")
+                completion(.failure(NSError(domain: "AlgorithmX", code: status,
+                    userInfo: [NSLocalizedDescriptionKey: "Backend returned HTTP \(status)"])))
+                return
+            }
             guard let data = data else {
                 completion(
                     .failure(
@@ -134,6 +149,28 @@ class NetworkClient {
     }
 
     // MARK: - GET Request
+    func getJsonArray(
+        request: URLRequest, completion: @escaping (Result<[[String: Any]], Error>) -> Void
+    ) {
+        session.dataTask(with: request) { data, response, error in
+            if let error = error { completion(.failure(error)); return }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            SdkLog.debug("GET status=\(status) url=\(request.url?.absoluteString ?? "")")
+            guard (200...299).contains(status), let data = data else {
+                completion(.failure(NSError(domain: "AlgorithmX", code: status,
+                    userInfo: [NSLocalizedDescriptionKey: "In-app API returned HTTP \(status)"])))
+                return
+            }
+            do {
+                guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                    throw NSError(domain: "AlgorithmX", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Expected an in-app views array"])
+                }
+                completion(.success(array))
+            } catch { completion(.failure(error)) }
+        }.resume()
+    }
+
     func getJson(endpoint: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         guard let url = URL(string: endpoint) else {
             completion(
@@ -155,6 +192,13 @@ class NetworkClient {
                 return
             }
 
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                SdkLog.error("HTTP \(status) from \(endpoint)")
+                completion(.failure(NSError(domain: "AlgorithmX", code: status,
+                    userInfo: [NSLocalizedDescriptionKey: "Backend returned HTTP \(status)"])))
+                return
+            }
             guard let data = data else {
                 completion(
                     .failure(

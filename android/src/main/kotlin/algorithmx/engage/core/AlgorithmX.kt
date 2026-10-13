@@ -9,10 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
+import java.lang.ref.WeakReference
+import android.net.ConnectivityManager
+import android.net.Network
 import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.UUID
 import java.util.Locale
 import java.util.TimeZone
 import androidx.core.app.NotificationCompat
@@ -25,6 +30,8 @@ import algorithmx.engage.events.EventDispatcher
 import algorithmx.engage.networking.NetworkClient
 import algorithmx.engage.webview.WebViewQueueManager
 import algorithmx.engage.webview.WebViewDisplayRule
+import algorithmx.engage.webview.InAppView
+import algorithmx.engage.webview.InAppDisplay
 import algorithmx.engage.notifications.EngageNotificationManager
 import algorithmx.engage.notifications.NotificationActionRouter
 import algorithmx.engage.activities.CampaignActivity
@@ -48,6 +55,9 @@ object AlgorithmX {
     private var appContext: Context? = null
 
     private var fingerprintDevice: String? = null
+    private var deviceId: String? = null
+    private var identifiedUserId: String? = null
+    private var identityPartnerId: String? = null
     private var engageUserId: String? = null
 
     private var eventDispatcher: EventDispatcher? = null
@@ -65,6 +75,18 @@ object AlgorithmX {
     private var smallIconResId: Int = android.R.drawable.ic_dialog_info
     private var initialized = false
     private var lastDeviceToken: String? = null
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var foregroundActivity: WeakReference<Activity>? = null
+    private var activeCampaignActivity: WeakReference<CampaignActivity>? = null
+    private var pendingDisplay: InAppDisplay? = null
+    private var inAppLanguage: String? = null
+    private var inAppSessionId = UUID.randomUUID().toString()
+    private var visitStartedAt = 0L
+    private var fetchedInAppViews = false
+    private var displayedInAppView = false
+    private var fetchAttempts = 0
+    private var pendingViews = emptyList<InAppView>()
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     enum class NotificationEventStatus(val value: Int) {
         SENT(1),
@@ -77,26 +99,50 @@ object AlgorithmX {
     // region ─ Initialization ──────────────────────────────────────────────────
 
     /**
-     * Safe to call more than once: later calls only update the base URL and partner ID.
+     * Safe to call more than once with the same partner ID; later calls update the base URL.
      * [partnerId] is sent as the `x-partner-id` header on every request.
      */
     fun initialize(application: Application, apiBaseUrl: String, partnerId: String) {
+        require(!initialized || identityPartnerId == partnerId) { "Destroy the SDK before changing partnerId" }
         appContext = application.applicationContext
         apiUrl = apiBaseUrl.trimEnd('/')
         NetworkClient.partnerId = partnerId
-        if (initialized) return
+        if (initialized) {
+            bootstrapIdentity()
+            return
+        }
+        identityPartnerId = partnerId
         initialized = true
 
         eventDispatcher = EventDispatcher(application.applicationContext)
         webViewQueueManager = WebViewQueueManager(application.applicationContext)
+        webViewQueueManager?.clearQueue()
         notificationManager = EngageNotificationManager()
 
         lifecycleManager = ActivityLifecycleManager.getInstance()
         lifecycleManager?.register(application)
 
-        // An identified user survives restarts (also when a push starts the
-        // process); otherwise default to the Android ID like iOS uses IDFV.
-        fingerprintDevice = loadIdentifiedUserId() ?: fingerprintDevice ?: readAndroidId()
+        // Installation/device identity is separate from the application's account ID.
+        fingerprintDevice = storedUuid("anonymous_id")
+        deviceId = storedUuid("device_id")
+        identifiedUserId = prefs()?.getString(PREF_IDENTIFIED_USER_ID, null)
+        bootstrapIdentity()
+        identifiedUserId?.takeIf { it.isNotBlank() }?.let { identifyUser(it) }
+
+        val connectivity = application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post {
+                    if (foregroundActivity?.get() != null) {
+                        bootstrapIdentity()
+                        identifiedUserId?.let { identifyUser(it) }
+                        fetchAttempts = 0
+                        fetchInAppViews()
+                    }
+                }
+            }
+        }
+        connectivity.registerDefaultNetworkCallback(networkCallback!!)
 
         SdkLog.d(TAG, "AlgorithmX initialized with apiBaseUrl=$apiUrl partnerId=$partnerId")
     }
@@ -105,6 +151,13 @@ object AlgorithmX {
         appContext?.let { context ->
             if (context is Application) lifecycleManager?.unregister(context)
         }
+        networkCallback?.let { callback ->
+            val connectivity = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            runCatching { connectivity?.unregisterNetworkCallback(callback) }
+        }
+        networkCallback = null
+        foregroundActivity = null
+        invalidateInAppViews()
         lifecycleManager = null
         eventDispatcher?.destroy()
         eventDispatcher = null
@@ -120,59 +173,95 @@ object AlgorithmX {
 
     // region ─ Identity & device ───────────────────────────────────────────────
 
-    /** Set or override the device fingerprint. Called automatically during init. */
+    /** Legacy anonymous-ID override. Must be a UUID; use identifyUser for account IDs. */
     fun setDeviceFingerprint(fingerprint: String) {
-        fingerprintDevice = fingerprint
+        val anonymousId = UUID.fromString(fingerprint).toString()
+        require(anonymousId.equals(fingerprint, ignoreCase = true)) { "fingerprint must be a canonical UUID" }
+        if (anonymousId == fingerprintDevice) return
+        fingerprintDevice = anonymousId
+        identifiedUserId = null
+        prefs()?.edit()?.putString("anonymous_id", anonymousId)?.remove(PREF_IDENTIFIED_USER_ID)?.apply()
+        webViewQueueManager?.clearQueue()
+        invalidateInAppViews()
+        bootstrapIdentity()
+        reRegisterDeviceToken()
+        fetchInAppViews()
     }
 
-    /** Get the current device fingerprint (no fallback). */
+    /** The SDK-generated anonymous UUID, also used in X-Anonymous-Id. */
+    fun getAnonymousId(): String = resolveUserId()
+
+    /** Compatibility alias for getAnonymousId. */
     fun getDeviceFingerprint(): String? = fingerprintDevice
 
-    /**
-     * Identify a user. Sets fingerprintDevice to `userId`, keeps it across app
-     * restarts until [resetIdentity], and notifies backend.
-     */
+    /** Link the anonymous profile to ExternalId, email/phone, and supported customer traits. */
     fun identifyUser(userId: String, attributes: Map<String, Any>? = null) {
-        val previous = resolveUserId()
-        fingerprintDevice = userId
+        val previousCustomer = resolveCustomerId()
+        val identifiers = IdentityPayload.identifiers(userId, attributes)
+        val profile = IdentityPayload.profile(attributes)
+        if (identifiedUserId != null && identifiedUserId != userId) resetIdentity()
+        identifiedUserId = userId
         prefs()?.edit()?.putString(PREF_IDENTIFIED_USER_ID, userId)?.apply()
-        // previousFingerprintDevice lets the backend link what happened before login.
-        val body = mutableMapOf<String, Any>(
-            "fingerprintDevice" to userId,
-            "previousFingerprintDevice" to previous
-        )
-        attributes?.let { body["attributes"] = it }
-        eventDispatcher?.send("$apiUrl/api/v1/identify", "POST", body)
-        if (previous != userId) reRegisterDeviceToken()
+        bootstrapIdentity()
+        eventDispatcher?.send("$apiUrl/api/v1/Identity", "POST", mapOf(
+            "anonymousId" to resolveUserId(), "trustedIdentifiers" to identifiers
+        ))
+        if (profile.isNotEmpty()) sendUserProfile(profile)
+        if (previousCustomer != resolveCustomerId() || profile.isNotEmpty()) { invalidateInAppViews(); fetchInAppViews() }
     }
 
-    /** Forget the identified user (e.g. on logout) and go back to the device id. */
+    /** Submit supported customer traits. Ingestion replaces the complete profile; include all current values. */
+    fun setUserProfile(attributes: Map<String, Any>) {
+        require(attributes.keys.none { it in setOf("email", "phone", "userName") }) {
+            "Use identifyUser for email, phone and userName"
+        }
+        val profile = IdentityPayload.profile(attributes)
+        require(profile.isNotEmpty()) { "Profile must contain at least one supported field" }
+        bootstrapIdentity()
+        sendUserProfile(profile)
+        invalidateInAppViews()
+        fetchInAppViews()
+    }
+
+    private fun sendUserProfile(profile: Map<String, Any>) {
+        eventDispatcher?.send("$apiUrl/api/v1/Customer/Ingest", "POST", profile,
+            mapOf("X-Anonymous-Id" to resolveUserId(), "X-Device-Id" to deviceId.orEmpty()))
+    }
+
+    /** Logout starts a new anonymous profile while keeping the installation's device UUID. */
     fun resetIdentity() {
-        val previous = resolveUserId()
-        prefs()?.edit()?.remove(PREF_IDENTIFIED_USER_ID)?.apply()
-        fingerprintDevice = readAndroidId()
-        if (previous != resolveUserId()) reRegisterDeviceToken()
+        identifiedUserId = null
+        fingerprintDevice = UUID.randomUUID().toString()
+        prefs()?.edit()?.remove(PREF_IDENTIFIED_USER_ID)
+            ?.putString("anonymous_id", fingerprintDevice)?.apply()
+        webViewQueueManager?.clearQueue()
+        invalidateInAppViews()
+        bootstrapIdentity()
+        reRegisterDeviceToken()
+        fetchInAppViews()
     }
 
-    /** Pushes are sent to the token's owner, so move the token to the new identity at once. */
     private fun reRegisterDeviceToken() { lastDeviceToken?.let { registerDeviceToken(it) } }
 
     private fun prefs() = appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private fun loadIdentifiedUserId(): String? =
-        prefs()?.getString(PREF_IDENTIFIED_USER_ID, null)?.takeIf { it.isNotEmpty() }
+    private fun storedUuid(key: String): String {
+        val saved = prefs()?.getString(key, null)
+        val value = IdentityStorage.uuid(saved)
+        prefs()?.edit()?.putString(key, value)?.apply()
+        return value
+    }
 
-    /** Effective user ID used in payloads. */
-    private fun resolveUserId(): String =
-        fingerprintDevice ?: engageUserId ?: readAndroidId() ?: "anonymous"
+    private fun resolveUserId(): String = fingerprintDevice ?: storedUuid("anonymous_id").also { fingerprintDevice = it }
 
-    private fun readAndroidId(): String? = try {
-        appContext?.let {
-            Settings.Secure.getString(it.contentResolver, Settings.Secure.ANDROID_ID)
-                .takeIf { id -> !id.isNullOrEmpty() }
-        }
-    } catch (e: Exception) {
-        SdkLog.e(TAG, "Failed to read Android ID", e); null
+    private fun bootstrapIdentity() {
+        if (!initialized) return
+        eventDispatcher?.send("$apiUrl/api/v1/Identity/Bootstrap", "POST", mapOf(
+            "anonymousId" to resolveUserId(),
+            "deviceId" to (deviceId ?: storedUuid("device_id").also { deviceId = it }),
+            "userAgent" to mapOf("os" to "Android ${Build.VERSION.RELEASE}",
+                "deviceType" to "mobile", "deviceVendor" to Build.MANUFACTURER, "deviceModel" to Build.MODEL)
+        ))
     }
 
     // endregion
@@ -191,7 +280,7 @@ object AlgorithmX {
         )
         eventDispatcher?.send(
             "$apiUrl/api/v1/Event/Log", "POST", listOf(body),
-            mapOf("X-Anonymous-Id" to userId)
+            mapOf("X-Anonymous-Id" to userId, "X-Device-Id" to deviceId.orEmpty())
         )
     }
 
@@ -304,48 +393,7 @@ object AlgorithmX {
     }
 
     fun processSilentNotification(context: Context, data: Map<String, String>) {
-        val pushData = SdkPayload.notification(data)
-        val action = pushData["engageAction"]
-        if (action != "algoTriggerWebview") return
-
-        val campaignId = pushData["algoCampaignId"]
-        val variationId = pushData["engageVariationId"] ?: "0"
-        val webviewUrl = pushData["engageWebviewUrl"]
-
-        // Store the backend-issued user id separately from the device fingerprint.
-        pushData["engageUserId"]?.takeIf { it.isNotEmpty() }?.let { engageUserId = it }
-
-        if (campaignId.isNullOrEmpty() || webviewUrl.isNullOrEmpty()) return
-
-        val dynamicContent = try {
-            pushData["engageDynamicContent"]?.takeIf { it.isNotEmpty() }
-                ?.let { algorithmx.engage.utils.JsonUtil.fromJson(it) as? Map<String, Any> }
-        } catch (e: Exception) { null }
-
-        val configs = try {
-            pushData["configs"]?.takeIf { it.isNotEmpty() }
-                ?.let { algorithmx.engage.utils.JsonUtil.fromJson(it) as? Map<String, Any> }
-        } catch (e: Exception) { null }
-
-        val displayRule = WebViewDisplayRule.fromConfigs(configs)
-        val userId = resolveUserId()
-
-        trackEvent("silentNotificationReceived", mapOf(
-            "campaignId" to campaignId,
-            "variationId" to variationId,
-            "action" to action,
-            "hasDynamicContent" to (dynamicContent != null),
-            "hasConfigs" to (configs != null),
-            "priority" to displayRule.priority
-        ))
-
-        // Only enqueue if the webview can be (or eventually will be) displayed,
-        // also while another webview is showing: an entry that can never show
-        // would stay queued and block its variation id.
-        if (webViewQueueManager?.canDisplayWebView(campaignId, variationId, userId, displayRule) == true ||
-            webViewQueueManager?.willBeAbleToDisplayLater(campaignId, variationId, userId, displayRule) == true) {
-            webViewQueueManager?.enqueueWebView(campaignId, variationId, webviewUrl, dynamicContent, displayRule, pushData.toMap())
-        }
+        SdkLog.d(TAG, "Ignoring legacy silent-push in-app trigger; views are fetched from the API")
     }
 
     // endregion
@@ -426,14 +474,143 @@ object AlgorithmX {
      * comes to the foreground; calling it from the host as well is harmless.
      */
     fun onAppBecameActive(context: Context) {
-        if (!isWebViewShowing) webViewQueueManager?.processQueuedWebViews(context, resolveUserId())
+        if (context is CampaignActivity) return
+        foregroundActivity = (context as? Activity)?.let { WeakReference(it) }
+        visitStartedAt = System.currentTimeMillis()
+        bootstrapIdentity()
+        identifiedUserId?.let { identifyUser(it) }
+        fetchInAppViews()
+        showNextInAppView()
     }
 
-    fun onAppWentBackground() { webViewQueueManager?.resetSessionFlag() }
+    internal fun onActivityResumed(activity: Activity) {
+        if (activity is CampaignActivity || activity is NotificationClickActivity) return
+        foregroundActivity = WeakReference(activity)
+        if (visitStartedAt == 0L) visitStartedAt = System.currentTimeMillis()
+        fetchInAppViews()
+        showNextInAppView()
+    }
 
-    /** Records a successful webview HTML load. Called from CampaignActivity on page load. */
+    fun onAppWentBackground() {
+        foregroundActivity = null
+        webViewQueueManager?.resetSessionFlag()
+        pendingViews = emptyList()
+        inAppSessionId = UUID.randomUUID().toString()
+        fetchedInAppViews = false
+        displayedInAppView = false
+        fetchAttempts = 0
+    }
+
+    private fun resolveCustomerId(): String = identifiedUserId ?: resolveUserId()
+
+    /** Optional override for an app language that differs from the device language. Empty text restores the default. */
+    fun setInAppLanguage(language: String) {
+        val value = language.trim()
+        if (inAppLanguage == value) return
+        inAppLanguage = value
+        invalidateInAppViews()
+        fetchInAppViews()
+    }
+
+    private fun invalidateInAppViews() {
+        pendingViews = emptyList()
+        fetchedInAppViews = false
+        fetchAttempts = 0
+        inAppSessionId = UUID.randomUUID().toString()
+        activeCampaignActivity?.get()?.let { activity -> mainHandler.post { activity.finish() } }
+        pendingDisplay = null
+    }
+
+    private fun fetchInAppViews() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { mainHandler.post { fetchInAppViews() }; return }
+        if (!initialized || foregroundActivity?.get() == null || fetchedInAppViews) return
+        val anonymousId = resolveUserId()
+        val customerId = resolveCustomerId()
+        val locale = appContext?.resources?.configuration?.locales?.get(0)?.toLanguageTag() ?: Locale.getDefault().toLanguageTag()
+        val language = inAppLanguage?.takeIf { it.isNotBlank() } ?: locale
+        val url = NetworkClient.inAppViewsUrl(apiUrl, language, customerId)
+        val session = inAppSessionId
+        fetchedInAppViews = true
+        fetchAttempts++
+        eventDispatcher?.getJsonArray(url, mapOf("X-Anonymous-Id" to anonymousId, "X-Device-Id" to deviceId.orEmpty())) { result ->
+            mainHandler.post {
+                if (session != inAppSessionId || anonymousId != resolveUserId() || customerId != resolveCustomerId()) return@post
+                result.onSuccess { rows ->
+                    pendingViews = rows.mapNotNull(InAppView::fromMap).sortedWith(compareByDescending<InAppView> { it.rule.priority }.thenBy { it.id })
+                    showNextInAppView()
+                }.onFailure { error ->
+                    fetchedInAppViews = false
+                    SdkLog.e(TAG, "In-app API fetch failed", error)
+                    val status = (error as? NetworkClient.HttpFailure)?.status
+                    if (fetchAttempts < 4 && (status == 409 || status == 408 || status == 429 ||
+                        (status != null && status >= 500) || error is java.io.IOException)) {
+                        mainHandler.postDelayed({ if (session == inAppSessionId) fetchInAppViews() }, fetchAttempts * 500L)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showNextInAppView(attempt: Int = 0) {
+        val activity = foregroundActivity?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed || isWebViewShowing || displayedInAppView || pendingViews.isEmpty()) return
+        if (!activity.hasWindowFocus()) {
+            if (attempt < 10) {
+                val session = inAppSessionId
+                mainHandler.postDelayed({ if (session == inAppSessionId) showNextInAppView(attempt + 1) }, 200)
+            }
+            return
+        }
+        for (view in pendingViews) {
+            val variation = view.variation(resolveCustomerId()) ?: continue
+            if (webViewQueueManager?.canDisplayWebView(view.campaignId, variation.id, resolveCustomerId(), view.rule) != true) continue
+            val delay = (view.delaySeconds * 1000).toLong() - (System.currentTimeMillis() - visitStartedAt)
+            if (delay > 0) {
+                val session = inAppSessionId
+                mainHandler.postDelayed({ if (session == inAppSessionId) showNextInAppView() }, delay)
+                return
+            }
+            val display = InAppDisplay(UUID.randomUUID().toString(), view, variation, apiUrl, resolveUserId(), resolveCustomerId())
+            pendingDisplay = display
+            pendingViews = emptyList()
+            displayedInAppView = true
+            isWebViewShowing = true
+            try {
+                activity.startActivity(Intent(activity, CampaignActivity::class.java).putExtra(CampaignActivity.EXTRA_IN_APP_TOKEN, display.token))
+            } catch (error: Exception) {
+                pendingDisplay = null
+                isWebViewShowing = false
+                SdkLog.e(TAG, "Failed to display in-app view", error)
+            }
+            return
+        }
+        pendingViews = emptyList()
+    }
+
+    internal fun inAppDisplay(token: String): InAppDisplay? = pendingDisplay?.takeIf { it.token == token }
+    internal fun attachInAppActivity(activity: CampaignActivity) { activeCampaignActivity = WeakReference(activity) }
+    internal fun completeInAppDisplay(token: String) {
+        if (pendingDisplay?.token == token) pendingDisplay = null
+        activeCampaignActivity = null
+    }
+
+    internal fun trackInAppInteraction(display: InAppDisplay, interactionType: String, payload: Map<String, Any>) {
+        val data = payload + mapOf("inAppViewId" to display.view.id, "campaignId" to display.view.campaignId,
+            "variationId" to display.variation.id, "interactionType" to interactionType, "customerId" to display.customerId)
+        val timestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+        eventDispatcher?.send("$apiUrl/api/v1/Event/Log", "POST", listOf(mapOf(
+            "eventType" to "inAppViewInteraction", "data" to data, "timestamp" to timestamp)),
+            mapOf("X-Anonymous-Id" to display.anonymousId, "X-Device-Id" to deviceId.orEmpty()))
+        campaignInteractionListener?.onCampaignInteraction(display.view.campaignId, display.variation.id, interactionType, data)
+    }
+
+    /** Record successful HTML loads against the identity captured when the view opened. */
     fun recordWebViewDisplaySuccess(campaignId: String, variationId: String, expiresAt: Long = 0L) {
         webViewQueueManager?.recordWebViewDisplay(campaignId, variationId, resolveUserId(), expiresAt)
+    }
+
+    internal fun recordInAppDisplaySuccess(display: InAppDisplay) {
+        webViewQueueManager?.recordWebViewDisplay(display.view.campaignId, display.variation.id, display.customerId, display.view.rule.expiresAt)
     }
 
     // endregion
@@ -504,12 +681,20 @@ object AlgorithmX {
 
     // region ─ Misc / debug ────────────────────────────────────────────────────
 
-    fun getQueueSize(): Int = webViewQueueManager?.getQueueSize() ?: 0
+    fun getQueueSize(): Int = pendingViews.size
     fun getWebViewQueueSize(): Int = getQueueSize()
-    fun clearWebViewQueue(): Int = webViewQueueManager?.clearQueue() ?: 0
-    fun clearAllWebViewData(): Boolean = webViewQueueManager?.clearAllData() ?: false
+    fun clearWebViewQueue(): Int {
+        val count = pendingViews.size + (webViewQueueManager?.clearQueue() ?: 0)
+        pendingViews = emptyList()
+        inAppSessionId = UUID.randomUUID().toString()
+        return count
+    }
+    fun clearAllWebViewData(): Boolean {
+        clearWebViewQueue()
+        return webViewQueueManager?.clearAllData() ?: false
+    }
     fun getDisplayStats(campaignId: String, variationId: String): String =
-        webViewQueueManager?.getDisplayStats(campaignId, variationId, resolveUserId())
+        webViewQueueManager?.getDisplayStats(campaignId, variationId, resolveCustomerId())
             ?: "WebView queue manager not initialized"
 
     fun setSmallIcon(resId: Int) { smallIconResId = resId }

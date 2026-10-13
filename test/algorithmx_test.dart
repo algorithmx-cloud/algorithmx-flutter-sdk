@@ -92,6 +92,53 @@ void main() {
     },
   );
 
+  test('identity and profile APIs forward supported fields and validate inputs',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return call.method == 'getAnonymousId'
+          ? 'a781ba16-c6fb-469d-83fb-2d2cc0eb0057'
+          : null;
+    });
+    await sdk.identifyUser('customer_123', attributes: {
+      'email': 'user@example.com',
+      'firstName': 'Amina',
+      'pushOptIn': true
+    });
+    await sdk.setUserProfile({'firstName': 'Amina', 'pushOptIn': false});
+    expect(await sdk.getAnonymousId(), 'a781ba16-c6fb-469d-83fb-2d2cc0eb0057');
+    expect((calls[0].arguments as Map)['userId'], 'customer_123');
+    expect((calls[1].arguments as Map)['attributes'],
+        {'firstName': 'Amina', 'pushOptIn': false});
+    expect(() => sdk.identifyUser(' ', attributes: {}), throwsArgumentError);
+    expect(
+        () => sdk.identifyUser('customer_123', attributes: {'plan': 'premium'}),
+        throwsArgumentError);
+    expect(() => sdk.setUserProfile({'email': 'user@example.com'}),
+        throwsArgumentError);
+    expect(
+        () => sdk.setUserProfile({'pushOptIn': 'true'}), throwsArgumentError);
+    expect(calls.length, 3);
+  });
+
+  test(
+      'app language override delegates to native and can restore the automatic default',
+      () async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    await sdk.setInAppLanguage('ar-SA');
+    await sdk.setInAppLanguage('');
+    expect(calls[0].method, 'setInAppLanguage');
+    expect(calls[0].arguments, {'language': 'ar-SA'});
+    expect(calls[1].arguments, {'language': ''});
+  });
+
   test('notification status uses the native wire code', () async {
     MethodCall? received;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

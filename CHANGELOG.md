@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 — October 13, 2026
+
+- Production API-based in-app delivery requires the backend work tracked in [AlgorithmX issue #207](https://github.com/algorithmx-cloud/AlgorithmX/issues/207). SDK flows were verified on physical Android and iOS devices against the local test backend.
+
+- API-based in-app views now work across Android, iOS, React Native/Expo and Flutter. Fetch automatically on startup/foreground and identity changes, with device/app language, anonymous/device UUID headers, and ExternalId as customerId after identify.
+- Inline HTML/CSS/JS, translated text/placeholders/RTL, fractional stable allocation, local account-based history, priority/frequency/expiry and enter-time delay are shared across native implementations. Legacy silent in-app triggers are ignored; visible push and manual previews remain separate.
+- API-view interactions use the backend's Event/Log contract with string UUIDs and the identity captured at display time. Ordered GETs, bounded 409/network retries and connectivity recovery minimise host integration work.
+
+- Generate and persist anonymous and installation device UUIDs inside the SDK. Bootstrap the profile through `/api/v1/Identity/Bootstrap`.
+- Identify through `/api/v1/Identity` using `anonymousId` and trusted identifiers: ExternalId, Email, Phone and UserName. Login preserves the anonymous UUID; logout/account switching creates a new one and clears waiting campaigns.
+- Map supported customer traits to `/api/v1/Customer/Ingest` with profile headers. Add `setUserProfile` and `getAnonymousId`; reject unsupported profile fields. Customer ingestion replaces the complete set of supported fields.
+- Send events with the anonymous UUID after login; keep account IDs separate. Serialize SDK HTTP requests in call order. The backend processes accepted requests asynchronously on separate queues.
+- Legacy `setDeviceFingerprint` now accepts only anonymous UUIDs. Native dependency requirements are 1.1.0.
+
 ## 1.0.3
 
 - General `trackEvent` requests now use `POST /api/v1/Event/Log` with an array of `{ eventType, data, timestamp }` events and ISO 8601 UTC timestamps. Empty properties are sent as `{}`.

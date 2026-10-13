@@ -19,6 +19,9 @@ import UserNotifications
     // MARK: - State
     private var apiUrl: String = ""
     private var fingerprintDevice: String?
+    private var deviceId: String?
+    private var identifiedUserId: String?
+    private var identityPartnerId: String?
     private var engageUserId: String?
     private var dispatcher: EventDispatcher?
     private var webViewQueueManager: WebViewQueueManager?
@@ -26,6 +29,16 @@ import UserNotifications
     private var appGroup: String?
     private var initialized = false
     private var lastDeviceToken: String?
+    private var inAppLanguage: String?
+    private var inAppSessionId = UUID()
+    private var hasFetchedInAppViewsThisSession = false
+    private var hasDisplayedInAppViewThisSession = false
+    private var pendingInAppViews: [InAppView] = []
+    private var pendingInAppCustomerId: String?
+    private weak var inAppController: CampaignViewController?
+    private var inAppFetchAttempts = 0
+    private var inAppVisitStartedAt = Date()
+    private var pendingInAppUserId: String?
 
     static let identifiedUserIdKey = "algorithmx.identifiedUserId"
 
@@ -47,26 +60,16 @@ import UserNotifications
 
     // MARK: - Initialization
 
-    /// Safe to call more than once: later calls only update the base URL and partner ID.
+    /// Safe to call more than once with the same partner ID; later calls update the base URL.
     /// `partnerId` is sent as the `x-partner-id` header on every request.
     @objc public func initialize(apiBaseUrl: String, partnerId: String) {
-        self.apiUrl = apiBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        NetworkClient.shared.partnerId = partnerId
-        if initialized { shareConfigWithExtension(); return }
-        initialized = true
-        self.dispatcher = EventDispatcher.shared
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.initialize(apiBaseUrl: apiBaseUrl, partnerId: partnerId) }; return }
+        guard !initialized || identityPartnerId == partnerId else { SdkLog.error("Cannot change partnerId after initialization"); return }
+        let alreadyInitialized = initialized
+        initializeIdentity(apiBaseUrl: apiBaseUrl, partnerId: partnerId)
+        if alreadyInitialized { return }
         self.webViewQueueManager = WebViewQueueManager()
-
-        // An identified user survives restarts. Otherwise default the fingerprint
-        // to the iOS vendor identifier so partners don't have to set anything by
-        // hand. They can still override with setDeviceFingerprint.
-        if let saved = UserDefaults.standard.string(forKey: Self.identifiedUserIdKey), !saved.isEmpty {
-            fingerprintDevice = saved
-        } else if fingerprintDevice == nil,
-           let vendorId = UIDevice.current.identifierForVendor?.uuidString {
-            fingerprintDevice = vendorId
-        }
-        shareConfigWithExtension()
+        _ = self.webViewQueueManager?.clearQueue()
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(appBecameActive),
@@ -77,7 +80,13 @@ import UserNotifications
             name: UIApplication.didEnterBackgroundNotification, object: nil
         )
 
+        NotificationCenter.default.addObserver(self, selector: #selector(networkBecameAvailable),
+            name: Notification.Name("AlgorithmXConnectivityRestored"), object: nil)
         registerNotificationCategories()
+        // Initialization may happen after didBecomeActive, e.g. in a SwiftUI task.
+        DispatchQueue.main.async {
+            if UIApplication.shared.applicationState == .active { self.appBecameActive() }
+        }
     }
 
     /**
@@ -87,8 +96,31 @@ import UserNotifications
      Android). Pass the same App Group to `EngageNotificationService.processNotification`.
      */
     @objc public func initialize(apiBaseUrl: String, partnerId: String, appGroup: String) {
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.initialize(apiBaseUrl: apiBaseUrl, partnerId: partnerId, appGroup: appGroup) }; return }
         self.appGroup = appGroup
         initialize(apiBaseUrl: apiBaseUrl, partnerId: partnerId)
+    }
+
+    // Transport and identity setup is independent of notification/UI registration.
+    func initializeIdentity(apiBaseUrl: String, partnerId: String) {
+        guard !initialized || identityPartnerId == partnerId else { SdkLog.error("Cannot change partnerId after initialization"); return }
+        self.apiUrl = apiBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        NetworkClient.shared.partnerId = partnerId
+        if initialized {
+            bootstrapIdentity()
+            shareConfigWithExtension()
+            return
+        }
+        identityPartnerId = partnerId
+        initialized = true
+        self.dispatcher = EventDispatcher.shared
+
+        fingerprintDevice = storedUuid("algorithmx.anonymousId")
+        deviceId = storedUuid("algorithmx.deviceId")
+        identifiedUserId = UserDefaults.standard.string(forKey: Self.identifiedUserIdKey)
+        bootstrapIdentity()
+        if let userId = identifiedUserId, !userId.isEmpty { identifyUser(userId: userId) }
+        shareConfigWithExtension()
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -105,42 +137,130 @@ import UserNotifications
 
     // MARK: - Identity & device
 
+    /// Legacy anonymous-ID override. Must be a UUID; use identifyUser for account IDs.
     @objc public func setDeviceFingerprint(_ fingerprint: String) {
-        fingerprintDevice = fingerprint
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.setDeviceFingerprint(fingerprint) }; return }
+        guard let uuid = UUID(uuidString: fingerprint) else { SdkLog.error("fingerprint must be a UUID"); return }
+        let value = uuid.uuidString.lowercased()
+        if value == fingerprintDevice { return }
+        fingerprintDevice = value
+        identifiedUserId = nil
+        UserDefaults.standard.set(value, forKey: "algorithmx.anonymousId")
+        UserDefaults.standard.removeObject(forKey: Self.identifiedUserIdKey)
+        _ = clearWebViewQueue()
+        pendingInAppViews = []
+        pendingInAppUserId = nil
+        inAppSessionId = UUID()
+        hasFetchedInAppViewsThisSession = false
+        pendingInAppCustomerId = nil
+        inAppFetchAttempts = 0
+        inAppController?.dismiss(animated: false)
+        inAppController = nil
+        bootstrapIdentity()
         shareConfigWithExtension()
+        reRegisterDeviceToken()
+        fetchInAppViews()
     }
 
+    @objc public func getAnonymousId() -> String { resolveUserId() }
     @objc public func getDeviceFingerprint() -> String? { fingerprintDevice }
 
-    /// Identify a user. Kept across app restarts until `resetIdentity()`.
+    /// Link the anonymous profile to ExternalId and optional email, phone and customer traits.
     @objc public func identifyUser(userId: String, attributes: [String: Any]? = nil) {
-        let previous = resolveUserId()
-        fingerprintDevice = userId
-        UserDefaults.standard.set(userId, forKey: Self.identifiedUserIdKey)
-        shareConfigWithExtension()
-        // previousFingerprintDevice lets the backend link what happened before login.
-        var body: [String: Any] = ["fingerprintDevice": userId, "previousFingerprintDevice": previous]
-        if let attributes = attributes { body["attributes"] = attributes }
-        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/identify", method: "POST", payload: body)
-        if previous != userId { reRegisterDeviceToken() }
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.identifyUser(userId: userId, attributes: attributes) }; return }
+        do {
+            let previousCustomerId = resolveCustomerId()
+            let identifiers = try IdentityPayload.identifiers(userId: userId, attributes: attributes)
+            let profile = try IdentityPayload.profile(attributes)
+            if let current = identifiedUserId, current != userId { resetIdentity() }
+            identifiedUserId = userId
+            UserDefaults.standard.set(userId, forKey: Self.identifiedUserIdKey)
+            bootstrapIdentity()
+            dispatcher?.send(endpoint: "\(apiUrl)/api/v1/Identity", method: "POST", payload: [
+                "anonymousId": resolveUserId(), "trustedIdentifiers": identifiers
+            ])
+            if !profile.isEmpty { sendUserProfile(profile) }
+            if previousCustomerId != resolveCustomerId() || !profile.isEmpty { refreshInAppIdentity() }
+        } catch { SdkLog.error(error.localizedDescription) }
     }
 
-    /// Forget the identified user (e.g. on logout) and go back to the device id.
+    /// Ingestion replaces the complete profile; include all current values.
+    @objc public func setUserProfile(_ attributes: [String: Any]) {
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.setUserProfile(attributes) }; return }
+        do {
+            guard !attributes.keys.contains(where: { IdentityPayload.identifierFields[$0] != nil }) else {
+                SdkLog.error("Use identifyUser for email, phone and userName"); return
+            }
+            let profile = try IdentityPayload.profile(attributes)
+            guard !profile.isEmpty else { SdkLog.error("Profile must contain at least one supported field"); return }
+            bootstrapIdentity()
+            sendUserProfile(profile)
+            refreshInAppIdentity()
+        } catch { SdkLog.error(error.localizedDescription) }
+    }
+
+    private func sendUserProfile(_ profile: [String: Any]) {
+        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/Customer/Ingest", method: "POST", payload: profile,
+            headers: ["X-Anonymous-Id": resolveUserId(), "X-Device-Id": deviceId ?? ""])
+    }
+
+    /// Logout starts a new anonymous profile while retaining the installation's device UUID.
     @objc public func resetIdentity() {
-        let previous = resolveUserId()
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.resetIdentity() }; return }
+        identifiedUserId = nil
+        fingerprintDevice = UUID().uuidString.lowercased()
         UserDefaults.standard.removeObject(forKey: Self.identifiedUserIdKey)
-        fingerprintDevice = UIDevice.current.identifierForVendor?.uuidString
+        UserDefaults.standard.set(fingerprintDevice, forKey: "algorithmx.anonymousId")
+        _ = clearWebViewQueue()
+        pendingInAppViews = []
+        pendingInAppUserId = nil
+        inAppSessionId = UUID()
+        hasFetchedInAppViewsThisSession = false
+        pendingInAppCustomerId = nil
+        inAppFetchAttempts = 0
+        inAppController?.dismiss(animated: false)
+        inAppController = nil
+        bootstrapIdentity()
         shareConfigWithExtension()
-        if previous != resolveUserId() { reRegisterDeviceToken() }
+        reRegisterDeviceToken()
+        fetchInAppViews()
     }
 
-    /// Pushes are sent to the token's owner, so move the token to the new identity at once.
     private func reRegisterDeviceToken() {
         if let token = lastDeviceToken { registerDeviceToken(token) }
     }
 
+    private func storedUuid(_ key: String) -> String {
+        let saved = UserDefaults.standard.string(forKey: key).flatMap(UUID.init(uuidString:))
+        let value = (saved ?? UUID()).uuidString.lowercased()
+        UserDefaults.standard.set(value, forKey: key)
+        return value
+    }
+
     private func resolveUserId() -> String {
-        fingerprintDevice ?? engageUserId ?? UIDevice.current.identifierForVendor?.uuidString ?? "anonymous"
+        if let value = fingerprintDevice { return value }
+        let value = storedUuid("algorithmx.anonymousId")
+        fingerprintDevice = value
+        return value
+    }
+
+    private func bootstrapIdentity() {
+        guard initialized else { return }
+        if deviceId == nil { deviceId = storedUuid("algorithmx.deviceId") }
+        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/Identity/Bootstrap", method: "POST", payload: [
+            "anonymousId": resolveUserId(), "deviceId": deviceId!,
+            "userAgent": ["os": "iOS \(UIDevice.current.systemVersion)", "deviceType": "mobile",
+                "deviceVendor": "Apple", "deviceModel": UIDevice.current.model]
+        ])
+    }
+
+    /// Defaults to the device's preferred language. No call is needed for automatic fetching.
+    @objc public func setInAppLanguage(_ language: String) {
+        if !Thread.isMainThread { DispatchQueue.main.sync { self.setInAppLanguage(language) }; return }
+        let value = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard inAppLanguage != value else { return }
+        inAppLanguage = value
+        refreshInAppIdentity()
     }
 
     // MARK: - Event tracking
@@ -163,7 +283,7 @@ import UserNotifications
             "data": properties ?? [:],
             "timestamp": formatter.string(from: Date())
         ]
-        return ([body], ["X-Anonymous-Id": userId])
+        return ([body], ["X-Anonymous-Id": userId, "X-Device-Id": deviceId ?? ""])
     }
 
     @objc public func trackCampaignInteraction(
@@ -174,8 +294,17 @@ import UserNotifications
         sessionId: String? = nil,
         endpoint: String? = nil
     ) {
-        let userId = resolveUserId()
+        sendCampaignInteraction(campaignId: campaignId, variationId: variationId,
+            interactionType: interactionType, payload: payload, sessionId: sessionId,
+            endpoint: endpoint, userId: resolveUserId())
+    }
 
+    func sendCampaignInteraction(
+        campaignId: String, variationId: String, interactionType: String,
+        payload: [String: Any]?, sessionId: String? = nil, endpoint: String? = nil,
+        userId: String? = nil
+    ) {
+        let userId = userId ?? resolveUserId()
         var payloadString: String?
         if let payload = payload,
            let data = try? JSONSerialization.data(withJSONObject: payload),
@@ -183,12 +312,10 @@ import UserNotifications
             payloadString = s
         }
 
-        var body: [String: Any] = [
-            "fingerprintDevice": userId,
-            "campaignId": Int(campaignId) ?? 0,
-            "variationId": Int(variationId) ?? 0,
-            "interactionType": interactionType
-        ]
+        var body = makeCampaignInteractionBody(
+            campaignId: campaignId, variationId: variationId, interactionType: interactionType,
+            userId: userId
+        )
         if let payloadString = payloadString { body["payload"] = payloadString }
         if let sessionId = sessionId { body["sessionId"] = sessionId }
 
@@ -206,6 +333,13 @@ import UserNotifications
                 )
             }
         }
+    }
+
+    func makeCampaignInteractionBody(
+        campaignId: String, variationId: String, interactionType: String, userId: String
+    ) -> [String: Any] {
+        ["fingerprintDevice": userId, "campaignId": campaignId,
+         "variationId": variationId, "interactionType": interactionType]
     }
 
     @objc public func updateNotificationStatus(
@@ -247,8 +381,8 @@ import UserNotifications
 
     /**
      Unified notification entry point. Mirrors Android `handleFcmMessage`.
-     Routes silent webview triggers vs. visual notifications based on
-     `engageAction`. The completion handler must be called by iOS contract.
+     Visual push handling stays separate from API-delivered in-app views.
+     The completion handler must be called by iOS contract.
      */
     @objc public func handleNotification(
         userInfo: [AnyHashable: Any],
@@ -260,7 +394,7 @@ import UserNotifications
         }
         switch action {
         case "algoTriggerWebview":
-            processSilentNotification(userInfo: userInfo)
+            SdkLog.debug("Ignoring legacy silent-push in-app trigger; views are fetched from the API")
         case "algoShowNotification":
             // iOS displays visual notifications via the OS automatically.
             break
@@ -268,59 +402,6 @@ import UserNotifications
             break
         }
         completionHandler()
-    }
-
-    private func processSilentNotification(userInfo: [AnyHashable: Any]) {
-        guard let campaignId = userInfo["algoCampaignId"] as? String, !campaignId.isEmpty,
-              let webviewUrl = userInfo["engageWebviewUrl"] as? String, !webviewUrl.isEmpty else { return }
-        // Same as Android: a missing variation id defaults to "0".
-        let variationId = userInfo["engageVariationId"] as? String ?? "0"
-
-        if let userIdFromPayload = userInfo["engageUserId"] as? String, !userIdFromPayload.isEmpty {
-            engageUserId = userIdFromPayload
-        }
-
-        var dynamicContent: [String: Any]?
-        if let str = userInfo["engageDynamicContent"] as? String,
-           let data = str.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            dynamicContent = json
-        }
-
-        var displayRule = WebViewDisplayRule()
-        if let str = userInfo["configs"] as? String,
-           let data = str.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            displayRule = WebViewDisplayRule.fromDict(json)
-        }
-
-        let userId = resolveUserId()
-
-        trackEvent("silentNotificationReceived", properties: [
-            "campaignId": campaignId,
-            "variationId": variationId,
-            "action": "algoTriggerWebview",
-            "hasDynamicContent": dynamicContent != nil,
-            "hasConfigs": true,
-            "priority": displayRule.priority
-        ])
-
-        // Match Android: only enqueue if the webview can be (or eventually will be) displayed,
-        // also while another webview is showing: an entry that can never show would stay
-        // queued and block its variation id.
-        let canShow = webViewQueueManager?.canDisplayWebView(
-            campaignId: campaignId, variationId: variationId, userId: userId, rule: displayRule
-        ) ?? false
-        let willShowLater = webViewQueueManager?.willBeAbleToDisplayLater(
-            campaignId: campaignId, variationId: variationId, userId: userId, rule: displayRule
-        ) ?? false
-
-        if canShow || willShowLater {
-            _ = webViewQueueManager?.enqueueWebView(
-                campaignId: campaignId, variationId: variationId,
-                webviewUrl: webviewUrl, dynamicContent: dynamicContent, displayRule: displayRule
-            )
-        }
     }
 
     // MARK: - Notification response (tap / action button)
@@ -445,14 +526,21 @@ import UserNotifications
         }
     }
 
-    @objc public func setWebViewShowing(_ showing: Bool) { isWebViewShowing = showing }
+    @objc public func setWebViewShowing(_ showing: Bool) {
+        isWebViewShowing = showing
+        if !showing {
+            DispatchQueue.main.async { self.showNextInAppView() }
+        }
+    }
     @objc public func isWebViewCurrentlyShowing() -> Bool { isWebViewShowing }
 
     /// Recorded by `CampaignViewController` after the HTML loads successfully.
-    func recordWebViewDisplaySuccess(campaignId: String, variationId: String, expiresAt: Int64 = 0) {
+    func recordWebViewDisplaySuccess(
+        campaignId: String, variationId: String, expiresAt: Int64 = 0, userId: String? = nil
+    ) {
         webViewQueueManager?.recordWebViewDisplay(
             campaignId: campaignId, variationId: variationId,
-            userId: resolveUserId(), expiresAt: expiresAt
+            userId: userId ?? resolveUserId(), expiresAt: expiresAt
         )
     }
 
@@ -471,25 +559,190 @@ import UserNotifications
     // MARK: - Lifecycle
 
     @objc private func appBecameActive() {
-        if !isWebViewShowing {
-            _ = webViewQueueManager?.processQueuedWebViews(userId: resolveUserId())
-        }
+        inAppVisitStartedAt = Date()
+        bootstrapIdentity()
+        if let userId = identifiedUserId { identifyUser(userId: userId) }
+        fetchInAppViews()
+        showNextInAppView()
     }
 
     @objc private func appWentBackground() {
         webViewQueueManager?.resetSessionFlag()
+        inAppSessionId = UUID()
+        hasFetchedInAppViewsThisSession = false
+        hasDisplayedInAppViewThisSession = false
+        pendingInAppViews = []
+        pendingInAppUserId = nil
+        pendingInAppCustomerId = nil
+        inAppFetchAttempts = 0
+    }
+
+    // MARK: - API-delivered in-app views
+
+    func makeInAppViewsRequest(language: String, customerId: String, anonymousId: String) -> URLRequest? {
+        guard var components = URLComponents(string: "\(apiUrl)/api/v1/inAppViews") else { return nil }
+        components.queryItems = [URLQueryItem(name: "language", value: language),
+                                 URLQueryItem(name: "customerId", value: customerId)]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(NetworkClient.shared.partnerId, forHTTPHeaderField: "X-Partner-Id")
+        request.setValue(anonymousId, forHTTPHeaderField: "X-Anonymous-Id")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Id")
+        return request
+    }
+
+    func sendInAppViewInteraction(campaignId: String, variationId: String, viewId: String,
+        interactionType: String, payload: [String: Any]?, anonymousId: String, customerId: String) {
+        var data = payload ?? [:]
+        data["campaignId"] = campaignId
+        data["variationId"] = variationId
+        data["inAppViewId"] = viewId
+        data["interactionType"] = interactionType
+        data["customerId"] = customerId
+        let body: [[String: Any]] = [["eventType": "inAppViewInteraction", "data": data,
+            "timestamp": ISO8601DateFormatter().string(from: Date())]]
+        dispatcher?.send(endpoint: "\(apiUrl)/api/v1/Event/Log", method: "POST", payload: body,
+            headers: ["X-Anonymous-Id": anonymousId, "X-Device-Id": deviceId ?? ""])
+        campaignInteractionListener?.onCampaignInteraction(campaignId: campaignId, variationId: variationId,
+            interactionType: interactionType, payload: data)
+    }
+
+    private func resolveCustomerId() -> String { identifiedUserId ?? resolveUserId() }
+
+    private func refreshInAppIdentity() {
+        pendingInAppViews = []
+        pendingInAppUserId = nil
+        pendingInAppCustomerId = nil
+        inAppSessionId = UUID()
+        hasFetchedInAppViewsThisSession = false
+        inAppFetchAttempts = 0
+        inAppController?.dismiss(animated: false)
+        inAppController = nil
+        fetchInAppViews()
+    }
+
+    func makeCurrentInAppViewsRequest() -> URLRequest? {
+        let language = inAppLanguage.flatMap { $0.isEmpty ? nil : $0 } ?? Locale.preferredLanguages.first ?? "en"
+        return makeInAppViewsRequest(language: language, customerId: resolveCustomerId(), anonymousId: resolveUserId())
+    }
+
+    @objc private func networkBecameAvailable() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        inAppFetchAttempts = 0
+        bootstrapIdentity()
+        if let userId = identifiedUserId { identifyUser(userId: userId) }
+        fetchInAppViews()
+    }
+
+    private func fetchInAppViews() {
+        if !Thread.isMainThread { DispatchQueue.main.async { self.fetchInAppViews() }; return }
+        guard initialized, UIApplication.shared.applicationState == .active,
+              !hasFetchedInAppViewsThisSession else { return }
+        let userId = resolveUserId()
+        let customerId = resolveCustomerId()
+        guard let request = makeCurrentInAppViewsRequest() else { return }
+        hasFetchedInAppViewsThisSession = true
+        let sessionId = inAppSessionId
+        inAppFetchAttempts += 1
+        dispatcher?.getJsonArray(request: request) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self, self.inAppSessionId == sessionId,
+                      self.resolveUserId() == userId, self.resolveCustomerId() == customerId else { return }
+                switch result {
+                case .success(let array):
+                    self.pendingInAppCustomerId = customerId
+                    self.pendingInAppUserId = userId
+                    self.pendingInAppViews = array.compactMap(InAppView.init).sorted {
+                        $0.rule.priority == $1.rule.priority ? $0.id < $1.id : $0.rule.priority > $1.rule.priority
+                    }
+                    SdkLog.debug("Fetched \(self.pendingInAppViews.count) in-app views via API")
+                    self.showNextInAppView()
+                case .failure(let error):
+                    SdkLog.error("In-app API fetch failed: \(error.localizedDescription)")
+                    self.hasFetchedInAppViewsThisSession = false
+                    let status = (error as NSError).code
+                    if self.inAppFetchAttempts < 4 && (status == 409 || status == 408 || status == 429 ||
+                        (500...599).contains(status) || (error as NSError).domain == NSURLErrorDomain) {
+                        let delay = Double(self.inAppFetchAttempts) * 0.5
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self = self, self.inAppSessionId == sessionId else { return }
+                            self.fetchInAppViews()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func showNextInAppView(attempt: Int = 0) {
+        guard UIApplication.shared.applicationState == .active, !isWebViewShowing,
+              !hasDisplayedInAppViewThisSession, !pendingInAppViews.isEmpty else { return }
+        // Wait briefly for the host's first window or a dismissing modal to settle.
+        guard let top = topViewController(), top.viewIfLoaded?.window != nil,
+              !top.isBeingDismissed, !top.isBeingPresented, top.presentedViewController == nil else {
+            if attempt < 10 {
+                let sessionId = inAppSessionId
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    if self.inAppSessionId == sessionId { self.showNextInAppView(attempt: attempt + 1) }
+                }
+            }
+            return
+        }
+        let userId = resolveUserId()
+        guard pendingInAppUserId == userId, pendingInAppCustomerId == resolveCustomerId() else { pendingInAppViews = []; return }
+        while !pendingInAppViews.isEmpty {
+            let view = pendingInAppViews.removeFirst()
+            guard let variation = view.variation(for: resolveCustomerId()),
+                  webViewQueueManager?.canDisplayWebView(
+                    campaignId: view.campaignId, variationId: variation.id,
+                    userId: resolveCustomerId(), rule: view.rule
+                  ) == true else { continue }
+            let delay = max(0, view.delaySeconds - Date().timeIntervalSince(inAppVisitStartedAt))
+            if delay > 0 {
+                pendingInAppViews.insert(view, at: 0)
+                let session = inAppSessionId
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self = self, self.inAppSessionId == session else { return }
+                    self.showNextInAppView()
+                }
+                return
+            }
+            let controller = CampaignViewController(view: view, variation: variation, baseURL: apiUrl,
+                userId: userId, customerId: resolveCustomerId())
+            inAppController = controller
+            controller.modalPresentationStyle = .overFullScreen
+            controller.modalTransitionStyle = .crossDissolve
+            isWebViewShowing = true
+            hasDisplayedInAppViewThisSession = true
+            top.present(controller, animated: true)
+            return
+        }
     }
 
     // MARK: - Misc
 
-    @objc public func getQueueSize() -> Int { webViewQueueManager?.getQueueSize() ?? 0 }
+    @objc public func getQueueSize() -> Int { pendingInAppViews.count }
     @objc public func getWebViewQueueSize() -> Int { getQueueSize() }
-    @objc public func clearWebViewQueue() -> Int { webViewQueueManager?.clearQueue() ?? 0 }
-    @objc public func clearAllWebViewData() -> Bool { webViewQueueManager?.clearAllData() ?? false }
+    @objc public func clearWebViewQueue() -> Int {
+        let count = pendingInAppViews.count + (webViewQueueManager?.clearQueue() ?? 0)
+        pendingInAppViews = []
+        pendingInAppUserId = nil
+        pendingInAppCustomerId = nil
+        inAppSessionId = UUID()
+        return count
+    }
+    @objc public func clearAllWebViewData() -> Bool {
+        _ = clearWebViewQueue()
+        return webViewQueueManager?.clearAllData() ?? false
+    }
 
     @objc public func getDisplayStats(campaignId: String, variationId: String) -> String {
         webViewQueueManager?.getDisplayStats(
-            campaignId: campaignId, variationId: variationId, userId: resolveUserId()
+            campaignId: campaignId, variationId: variationId, userId: resolveCustomerId()
         ) ?? "WebView queue manager not initialized"
     }
 

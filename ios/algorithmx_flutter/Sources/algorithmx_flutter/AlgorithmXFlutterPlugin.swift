@@ -140,6 +140,20 @@ public final class AlgorithmXFlutterPlugin: NSObject, FlutterPlugin {
         case "getDeviceFingerprint":
             result(sdk.getDeviceFingerprint())
 
+        case "setInAppLanguage":
+            guard let language = args["language"] as? String else {
+                result(FlutterError(code: "invalid_arguments", message: "language must be text", details: nil)); return
+            }
+            sdk.setInAppLanguage(language)
+            result(nil)
+
+        case "getAnonymousId":
+            result(sdk.getAnonymousId())
+
+        case "setUserProfile":
+            sdk.setUserProfile(args["attributes"] as? [String: Any] ?? [:])
+            result(nil)
+
         case "identifyUser":
             guard let userId = requiredString(args, "userId", result) else { return }
             sdk.identifyUser(userId: userId, attributes: args["attributes"] as? [String: Any])

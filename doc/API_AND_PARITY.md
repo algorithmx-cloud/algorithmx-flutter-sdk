@@ -24,12 +24,12 @@ keys.
 | `trackCampaignInteraction(campaignId:, variationId:, interactionType:, payload:, sessionId:, endpoint:)` | `Future<void>` | `trackCampaignInteraction` | Optional payload, session ID, and endpoint override. Campaign/variation IDs are converted to integers by the native SDK for its HTTP body; nonnumeric IDs become `0`. |
 | `updateNotificationStatus(notificationId, status, errorMessage:)` | `Future<void>` | `updateNotificationStatus` | Uses the status enum below. Native push handling already sends some statuses automatically. |
 | `registerDeviceToken(token)` | `Future<void>` | `registerDeviceToken` | Send FCM token on Android or APNs token on iOS, including token refresh. |
-| `showWebView(campaignId:, variationId:, url:, dynamicContent:, expiresAt:)` | `Future<void>` | `showWebView` | Shows the native campaign UI directly. `expiresAt` is Android-only; iOS ignores it. Use the normal push queue for ordinary campaigns. |
+| `showWebView(campaignId:, variationId:, url:, dynamicContent:, expiresAt:)` | `Future<void>` | `showWebView` | Shows the native campaign UI directly. `expiresAt` is Android-only; iOS ignores it. Ordinary in-app campaigns are fetched automatically from the API. |
 | `triggerWebView(campaignId:, webviewUrl:, dynamicContent:)` | `Future<void>` | `triggerWebView` | Manual immediate trigger for testing; bypasses normal queue rules. Fires `onWebViewTrigger`. |
 | `setWebViewShowing(showing)` | `Future<void>` | `setWebViewShowing` | Advanced native UI coordination; normal display manages this flag. |
 | `isWebViewCurrentlyShowing()` | `Future<bool>` | `isWebViewCurrentlyShowing` | Current native campaign UI state. |
 | `openDeepLink(url)` | `Future<bool>` | `openDeepLink` / Dart handler | If a Dart handler exists, this direct Dart call awaits it. Native-originated `open_screen` invokes the Dart handler asynchronously. Neither native SDK automatically navigates to an app screen. |
-| `getWebViewQueueSize()` | `Future<int>` | Android `getWebViewQueueSize`; iOS `getQueueSize` | Cross-platform count of queued campaigns. |
+| `getWebViewQueueSize()` | `Future<int>` | Android `getWebViewQueueSize`; iOS `getQueueSize` | Cross-platform count of pending API views. |
 | `clearWebViewQueue()` | `Future<int>` | `clearWebViewQueue` | Returns removed queue entries; display history remains. |
 | `clearAllWebViewData()` | `Future<bool>` | `clearAllWebViewData` | Clears queue and display history. Use deliberately. |
 | `getDisplayStats(campaignId:, variationId:)` | `Future<String>` | `getDisplayStats` | Native diagnostic text for the current fingerprint and campaign variation. |
@@ -59,15 +59,15 @@ service/delegate is preferred when the Flutter engine may be stopped.
 
 | Dart method | Platform | Purpose |
 | --- | --- | --- |
-| `handleFcmMessage(data, notificationTitle:, notificationBody:)` | Android | Routes an FCM data message to silent campaign or visual notification handling. Use the native FCM service for background delivery. |
+| `handleFcmMessage(data, notificationTitle:, notificationBody:)` | Android | Routes an FCM data message to visual notification handling; legacy silent campaign triggers are ignored. Use the native FCM service for background delivery. |
 | `processNormalNotification(data, title:, body:)` | Android | Handles a known visual notification directly. Usually `handleFcmMessage` chooses this. |
-| `processSilentNotification(data)` | Android | Handles a known silent campaign trigger directly. Usually `handleFcmMessage` chooses this. |
+| `processSilentNotification(data)` | Android | Compatibility entry point; legacy silent in-app triggers are ignored. |
 | `handleNotification(userInfo)` | iOS | Passes an APNs/UN notification payload to the native SDK. The AppDelegate should do this for background delivery. |
 | `handleNotificationResponse(actionIdentifier:, userInfo:)` | iOS | Passes a tap or action button response to native handling. The AppDelegate should call this from `UNUserNotificationCenterDelegate`. |
 | `handleNotificationClick(userInfo)` | iOS | Direct tap routing if the host already has only a payload; most apps should use `handleNotificationResponse`. |
 | `setSmallIcon(resourceId)` | Android | Sets a native drawable resource ID for visual notifications. A Flutter asset path is not a drawable ID. |
 | `getSmallIconResId()` | Android | Reads the current native notification icon ID. |
-| `onAppBecameActive()` | Android | Manually asks the native campaign queue to process; the plugin normally forwards the app lifecycle. |
+| `onAppBecameActive()` | Android | Manually asks the native API flow to fetch and display; the plugin normally forwards the app lifecycle. |
 | `onAppWentBackground()` | Android | Manually resets a campaign session flag; the plugin normally forwards the app lifecycle. |
 | `recordWebViewDisplaySuccess(campaignId:, variationId:, expiresAt:)` | Android | Advanced custom native WebView integration; the built-in campaign activity records this automatically. |
 | `handleIntent()` / `handleNewIntent()` | Android | Re-processes the current Activity intent. The native lifecycle manager normally does this automatically. Dart cannot serialize an `Intent`. |
@@ -87,7 +87,7 @@ observation. Cancel a `StreamSubscription` when its owner is disposed.
 
 | Callback property | Stream | Data and behavior |
 | --- | --- | --- |
-| `onWebViewTrigger` | `webViewTriggers` | `WebViewTriggerEvent(campaignId, webviewUrl, dynamicContent)`. Native manual `triggerWebView` fires it. Silent push queue display is handled internally by the native SDK and does not fire this listener. |
+| `onWebViewTrigger` | `webViewTriggers` | `WebViewTriggerEvent(campaignId, webviewUrl, dynamicContent)`. Native manual `triggerWebView` fires it. API view display is handled internally by the native SDK and does not fire this listener. |
 | `onNotificationClick` | `notificationClicks` | Receives a map of the complete tap payload. Return `true` if Flutter handled it; `false` for native default action routing. |
 | `onCustomAction` | `customActions` | Receives `action` and a map with `parsedActionData` for `action_type=custom_action`. Current native routers ignore this callback's bool after dispatch. |
 | `onActionHandled` | `handledActions` | Protocol exists in both native SDKs, but their current routers do not invoke it. The Dart event is ready if the native code starts emitting it. |
@@ -116,16 +116,10 @@ notification's `action_type` and JSON-string `actionData`:
 
 ## Native notification payload and display behavior
 
-Silent campaigns use `engage_action=algo_trigger_webview` with
-`algo_campaign_id`, `engage_variation_id`, and `engage_webview_url`. Optional
-`engage_dynamic_content` and `configs` are JSON strings. Android accepts a
-missing variation ID as `0`; iOS currently requires a variation ID string.
-The native queues persist campaign data in SQLite and apply their display
-rules, including priority, max show count, interval, and expiry. The Flutter
-plugin does not reimplement these rules in Dart.
+In-app campaigns use `GET /api/v1/inAppViews` automatically. The native SDK supplies language, ExternalId (or anonymous UUID before login), partner/anonymous/device headers, stable fractional allocation, inline rendering, translations and local display history. `setInAppLanguage(language)` optionally overrides the default; empty text restores it. Legacy silent campaign triggers are ignored.
 
 Native campaign JavaScript actions include close, click, submit, and coupon
-copy. They are tracked as campaign interactions, then forwarded to the Dart
+copy. For API views they are logged as `inAppViewInteraction` events, then forwarded to the Dart
 campaign interaction callback when a Flutter engine is attached.
 
 ## Channel contract for maintainers

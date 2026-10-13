@@ -145,7 +145,7 @@ class _ExampleScreenState extends State<ExampleScreen> {
                         'Identify',
                         () => _sdk.identifyUser(
                           _userId.text.trim(),
-                          attributes: {'source': 'flutter-example'},
+                          attributes: {'email': 'test@example.com'},
                         ),
                       ),
               child: const Text('2. Identify user'),

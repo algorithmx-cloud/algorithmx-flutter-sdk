@@ -23,11 +23,7 @@ native SDK rather than duplicating it in Dart.
 
 ## Why native source is bundled
 
-The Android SDK in this repository is a Gradle module with no published Maven
-coordinate. The iOS SDK is a Swift package with no CocoaPod release. A Flutter
-plugin that merely names those dependencies would require each consuming app
-to mount this monorepo in its native build. The plugin instead compiles copies
-of their sources and resources:
+Flutter compiles synchronized copies of the Android and iOS sources and resources, so consuming apps do not add separate Maven or CocoaPods SDK dependencies:
 
 - Android: `android/src/main/kotlin/algorithmx/engage` and
   `android/src/main/res`.
@@ -121,12 +117,7 @@ instance. Using a different URL or partner ID is an error, because silently
 reinitializing would discard the existing queue and add duplicate lifecycle
 observers.
 
-The Android native SDK's lifecycle manager routes notification intents but
-does not drain the campaign queue on foreground transitions. The Flutter
-Android bridge supplies the missing `onAppBecameActive` and
-`onAppWentBackground` calls using activity lifecycle callbacks. The iOS native
-SDK observes `UIApplication` notifications itself. Neither platform should
-use a Dart timer to poll the campaign queue.
+The Android native lifecycle manager and Flutter bridge cooperate on foreground/background transitions; fetch guards prevent duplicate in-app requests. iOS observes `UIApplication` notifications itself. SDK 1.1.0 fetches inline in-app campaigns through the API with automatic account/anonymous identity and language. Neither platform requires a Dart polling timer or silent push.
 
 Both platform bridges can receive multiple Flutter engines. The newest engine
 that has called Dart `initialize` receives callbacks. When that engine detaches,

@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 
 /**
  * Fire-and-forget HTTP dispatcher. Events sent while offline are dropped — there
@@ -23,6 +24,28 @@ class EventDispatcher(private val context: Context) {
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    private data class PendingRequest(val endpoint: String, val method: String, val payload: Any, val headers: Map<String, String>, val arrayResult: ((Result<List<Map<String, Any>>>) -> Unit)? = null)
+    private val requests = Channel<PendingRequest>(Channel.UNLIMITED)
+
+    init {
+        scope.launch {
+            for (request in requests) {
+                if (!isNetworkAvailable()) {
+                    SdkLog.w(TAG, "Network unavailable; dropping request to ${request.endpoint}")
+                    request.arrayResult?.invoke(Result.failure(java.io.IOException("Network unavailable")))
+                    continue
+                }
+                when (request.method) {
+                    "GET_ARRAY" -> request.arrayResult?.invoke(runCatching { NetworkClient.getJsonArray(request.endpoint, request.headers) })
+                    "POST" -> NetworkClient.postJson(request.endpoint, request.payload, request.headers)
+                    "PUT" -> NetworkClient.putJson(request.endpoint, request.payload, request.headers)
+                    "GET" -> NetworkClient.getJson(request.endpoint)
+                    else -> SdkLog.e(TAG, "Unsupported method: ${request.method}")
+                }
+            }
+        }
+    }
+
     fun send(
         endpoint: String, method: String = "POST", payload: Any? = null,
         headers: Map<String, String> = emptyMap()
@@ -31,22 +54,16 @@ class EventDispatcher(private val context: Context) {
             SdkLog.w(TAG, "Network unavailable; dropping request to $endpoint")
             return
         }
-        scope.launch {
-            try {
-                val body = payload ?: emptyMap<String, Any>()
-                when (method) {
-                    "POST" -> NetworkClient.postJson(endpoint, body, headers)
-                    "PUT" -> NetworkClient.putJson(endpoint, body)
-                    "GET" -> NetworkClient.getJson(endpoint)
-                    else -> SdkLog.e(TAG, "Unsupported method: $method")
-                }
-            } catch (e: Exception) {
-                SdkLog.e(TAG, "Request to $endpoint failed", e)
-            }
-        }
+        requests.trySend(PendingRequest(endpoint, method, payload ?: emptyMap<String, Any>(),
+            mapOf("x-partner-id" to NetworkClient.partnerId) + headers))
     }
 
-    fun destroy() { scope.cancel() }
+    fun getJsonArray(endpoint: String, headers: Map<String, String>, callback: (Result<List<Map<String, Any>>>) -> Unit) {
+        requests.trySend(PendingRequest(endpoint, "GET_ARRAY", emptyMap<String, Any>(),
+            mapOf("x-partner-id" to NetworkClient.partnerId) + headers, callback))
+    }
+
+    fun destroy() { requests.close(); scope.cancel() }
 
     private fun isNetworkAvailable(): Boolean {
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {

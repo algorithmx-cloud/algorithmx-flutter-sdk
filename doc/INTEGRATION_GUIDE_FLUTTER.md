@@ -14,7 +14,7 @@ Dart starts, so the two platform setup sections are required for reliable push.
 - Android app with `minSdk` **24** or higher and Java 17. The SDK's Android
   module uses `compileSdk` 34 and Kotlin.
 - iOS app with deployment target **15.0** or higher.
-- FCM configured for Android push and APNs configured for iOS push. The host
+- For optional visible push: FCM configured for Android and APNs for iOS. The host
   app owns push permission, credentials, and token refresh.
 
 This plugin bundles the native SDK source. Do not also add the separate
@@ -32,7 +32,7 @@ dependencies:
   flutter:
     sdk: flutter
   algorithmx_flutter:
-    path: /absolute/path/to/in-app-sdks/platforms/flutter/flutter-sdk  # or: algorithmx_flutter: ^1.0.1 from pub.dev
+    path: /absolute/path/to/in-app-sdks/platforms/flutter/flutter-sdk  # SDK 1.1.0 is local release preparation
 ```
 
 Then run these commands in the **Flutter app's** directory:
@@ -150,6 +150,33 @@ await AlgorithmX.instance.trackCampaignInteraction(
 Maps crossing the Flutter channel must contain channel-compatible values:
 strings, numbers, booleans, null, lists, and maps with string keys. Do not pass
 a Dart class instance directly; convert it to a map first.
+
+## API-based in-app views
+
+**Production backend support is pending:** the .NET in-app delivery route must be implemented as described in [AlgorithmX issue #207](https://github.com/algorithmx-cloud/AlgorithmX/issues/207). Current device tests use `in-app-test-backend`; no .NET implementation is included in this SDK update.
+
+In-app campaigns use the API in SDK 1.1.0. Initialise the SDK and identify a signed-in customer; no campaign-fetch code, silent push, push token, or notification permission is needed for this flow.
+
+1. The SDK bootstraps its anonymous profile and device automatically.
+2. On startup or returning to the foreground, it calls `GET /api/v1/inAppViews?language=...&customerId=...`.
+3. The backend checks the customer's segment, campaign publication/schedule and language, and returns eligible inline HTML, CSS, JavaScript, translations and variation parameters.
+4. The SDK selects a stable variation, applies priority, frequency, expiry and app-enter delay, and displays at most one campaign per visit. The template supplies its close button; Android also supports Back.
+
+The SDK supplies `X-Partner-Id`, its persistent UUID in `X-Anonymous-Id`, and the installation UUID in `X-Device-Id`. Before login, `customerId` is the anonymous UUID. After `identify` / `identifyUser`, it is your application's account ID, stored by AlgorithmX as `ExternalId`. The backend resolves the internal profile ID; your app does not pass an AlgorithmX profile UUID. Identification, logout and account changes invalidate old campaign requests and content. Signed-in variation selection and local display history use the account ID.
+
+Language defaults to the device/app language. Override it only when your app has its own language selector:
+
+```dart
+await AlgorithmX.instance.setInAppLanguage('ar');
+```
+
+An empty language override restores the automatic default. Arabic, Hebrew, Persian and Urdu translations use RTL layout; text and placeholder translations are applied from the template's `builderState.translations`.
+
+**First check:** publish an active campaign that matches your test customer's segment and language, open the app, and confirm the GET request and impression. Leave the app and return to check another visit. Impressions, clicks, submits, copies and closes are logged through `POST /api/v1/Event/Log` as `inAppViewInteraction`; campaign and variation UUIDs remain strings.
+
+The automatic mobile flow supports app-enter campaigns and an optional time delay. Browser URL/scroll/exit/inactivity rules and custom triggers are excluded by the backend from this automatic feed. Display history is stored on the installation; this is not a global cross-device frequency counter.
+
+GET requests follow queued identity/profile POSTs. When identity is still processing (`409`), the SDK retries up to three times, and it retries again when connectivity returns or the app re-enters the foreground. Normal event/profile requests remain fire-and-forget. The old silent-push `algoTriggerWebview` is ignored. Visible push notifications retain their separate integration.
 
 ## 4. Android push setup
 
@@ -282,16 +309,7 @@ for your app. If your app already uses another FCM service or a Flutter
 messaging plugin, merge these forwarding calls into its existing delivery path
 and make sure each message is forwarded once.
 
-The SDK routes `engage_action=algo_trigger_webview` to its campaign queue and
-`engage_action=algo_show_notification` to visible notification handling. It
-also accepts a title and body from the FCM notification payload. Campaigns
-queued while the app is inactive are considered when it becomes active; the
-Flutter Android plugin forwards this lifecycle transition to the native SDK.
-For a silent campaign that must reach `onMessageReceived` while the app is
-backgrounded, send it as an FCM **data message** with the AlgorithmX keys in
-`data`. Android's FCM SDK displays notification payloads itself in the
-background and does not call this service for those messages; see Firebase's
-[Android delivery table](https://firebase.google.com/docs/cloud-messaging/android/receive-messages).
+The SDK fetches in-app campaigns automatically from the API; legacy silent in-app triggers are ignored. For visible notifications, the native SDK routes `engageAction=algoShowNotification` to notification handling.
 For an SDK-controlled visible push, likewise send a data message with
 `engage_action=algo_show_notification` and `title`/`body` in its data map so
 the native SDK can display it and record its interaction events.
@@ -358,7 +376,7 @@ import algorithmx_flutter
                           didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
     }
 
-    // Optional: the plugin already forwards silent pushes (WebView campaigns) to the
+    // Optional: the plugin already forwards AlgorithmX background notifications to the
     // SDK. If you override this for your own handling, forward to AlgorithmX as below
     // and do not also call super, or the push is handled twice.
     override func application(
@@ -538,7 +556,7 @@ Dart. Register callbacks before push handling so a cold-start tap is not lost.
 | --- | --- |
 | `MissingPluginException` | Run `flutter pub get`, clean, rebuild, and use Android/iOS rather than web/desktop. Hot reload does not install native code. |
 | Android push arrives but no campaign | Ensure the FCM service initializes the native SDK before forwarding; verify `engage_action`, `algo_campaign_id`, and `engage_webview_url` in the data payload; bring the app to foreground to process queued views. |
-| iOS silent push does nothing | Enable Background Modes → Remote notifications; verify `content-available: 1`; initialize in AppDelegate before forwarding; ensure the payload includes campaign, variation, and URL strings. |
+| In-app campaign does not appear | Check startup, GET response, customer segment and language, publication/schedule, frequency and expiry. Push setup is unnecessary for API views. |
 | iOS image or buttons missing | Add the Notification Service Extension and its helper source; verify `mutable-content: 1`. |
 | Visible push missing on Android 13+ | Request notification permission and confirm the app's FCM setup. |
 | Tap navigates twice | Forward each push/tap once, and return `true` from a Dart callback after your app handles it. |
@@ -548,7 +566,7 @@ Dart. Register callbacks before push handling so a cold-start tap is not lost.
 
 The `example/` app demonstrates the Dart API. Before a push test, replace its
 placeholder URL and configure FCM/APNs in the generated platform projects.
-Test these flows on real devices: initial token, token refresh, silent campaign
+Test these flows on real devices: initial token, token refresh, API campaign
 while foreground/background, visual push tap, action button, deep link, and
 rich iOS notification. Android emulators and iOS simulators can exercise many
 UI methods but are not a full substitute for delivery through your push setup.

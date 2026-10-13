@@ -5,6 +5,7 @@ import algorithmx.engage.utils.SdkLog
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
@@ -46,10 +47,11 @@ object NetworkClient {
         }
     }
 
-    fun putJson(url: String, body: Any) {
+    fun putJson(url: String, body: Any, headers: Map<String, String> = emptyMap()) {
         try {
             val req = Request.Builder().url(url)
                 .header(PARTNER_ID_HEADER, partnerId)
+                .apply { headers.forEach { (name, value) -> header(name, value) } }
                 .put(JsonUtil.toJson(body).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { res ->
@@ -63,6 +65,23 @@ object NetworkClient {
             SdkLog.e(TAG, "PUT $url threw", e)
         }
     }
+
+    fun inAppViewsUrl(baseUrl: String, language: String, customerId: String): String =
+        "${baseUrl.trimEnd('/')}/api/v1/inAppViews".toHttpUrl().newBuilder()
+            .addQueryParameter("language", language).addQueryParameter("customerId", customerId).build().toString()
+
+    @Suppress("UNCHECKED_CAST")
+    fun getJsonArray(url: String, headers: Map<String, String>): List<Map<String, Any>> {
+        val request = Request.Builder().url(url).header(PARTNER_ID_HEADER, partnerId)
+            .header("Accept", "application/json").header("Cache-Control", "no-cache")
+            .apply { headers.forEach { (key, value) -> header(key, value) } }.get().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw HttpFailure(response.code)
+            return JsonUtil.fromJsonArray(response.body?.string() ?: "")
+        }
+    }
+
+    class HttpFailure(val status: Int) : Exception("Backend returned HTTP $status")
 
     fun getJson(url: String): Any? {
         return try {

@@ -23,6 +23,11 @@ public class CampaignViewController: UIViewController {
     private let url: String
     private let dynamicContent: [String: Any]?
     private let expiresAt: Int64
+    private var inlineTemplate: InAppTemplate?
+    private var language: String = "en"
+    private var displayCustomerId: String?
+    private var displayUserId: String?
+    private var inAppViewId: String?
 
     private var webView: WKWebView!
     private var activityIndicator: UIActivityIndicatorView!
@@ -46,6 +51,18 @@ public class CampaignViewController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    convenience init(
+        view: InAppView, variation: InAppVariation, baseURL: String, userId: String, customerId: String? = nil
+    ) {
+        self.init(campaignId: view.campaignId, variationId: variation.id, url: baseURL,
+                  dynamicContent: variation.parameters, expiresAt: view.rule.expiresAt)
+        inlineTemplate = variation.template
+        language = view.language
+        displayCustomerId = customerId ?? userId
+        displayUserId = userId
+        inAppViewId = view.id
+    }
+
     // MARK: - Lifecycle
 
     public override func viewDidLoad() {
@@ -57,11 +74,12 @@ public class CampaignViewController: UIViewController {
     public override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if shown && !trackedExplicitClose {
-            AlgorithmX.shared.trackCampaignInteraction(
+            sendInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "closeDismiss",
                 payload: ["reason": "viewDismissed", "timestamp": Int64(Date().timeIntervalSince1970 * 1000)],
-                endpoint: Self.interactionEndpoint
+                endpoint: Self.interactionEndpoint,
+                userId: displayCustomerId
             )
         }
         AlgorithmX.shared.setWebViewShowing(false)
@@ -69,6 +87,18 @@ public class CampaignViewController: UIViewController {
 
     deinit {
         userContentController?.removeScriptMessageHandler(forName: "EngageBridge")
+    }
+
+    private func sendInteraction(campaignId: String, variationId: String, interactionType: String,
+        payload: [String: Any]?, endpoint: String, userId: String?) {
+        if let viewId = inAppViewId, let anonymousId = displayUserId, let customerId = displayCustomerId {
+            AlgorithmX.shared.sendInAppViewInteraction(campaignId: campaignId, variationId: variationId,
+                viewId: viewId, interactionType: interactionType, payload: payload,
+                anonymousId: anonymousId, customerId: customerId)
+        } else {
+            AlgorithmX.shared.sendCampaignInteraction(campaignId: campaignId, variationId: variationId,
+                interactionType: interactionType, payload: payload, endpoint: endpoint, userId: userId)
+        }
     }
 
     // MARK: - UI setup
@@ -79,6 +109,12 @@ public class CampaignViewController: UIViewController {
         let config = WKWebViewConfiguration()
         userContentController = WKUserContentController()
         userContentController.add(self, name: "EngageBridge")
+        if let template = inlineTemplate {
+            userContentController.addUserScript(WKUserScript(
+                source: template.translationScript(language: language),
+                injectionTime: .atDocumentEnd, forMainFrameOnly: true
+            ))
+        }
         config.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: config)
@@ -109,6 +145,12 @@ public class CampaignViewController: UIViewController {
     // MARK: - WebView load
 
     private func loadWebView() {
+        if let template = inlineTemplate {
+            let html = resolveDynamicPlaceholders(in: template.document)
+                .replacingOccurrences(of: "${variationId}", with: variationId)
+            webView.loadHTMLString(html, baseURL: URL(string: url + "/"))
+            return
+        }
         guard let url = URL(string: url) else { dismiss(animated: true); return }
         fetchAndLoadHTMLWithPlaceholders(url: url)
     }
@@ -183,26 +225,26 @@ extension CampaignViewController: WKScriptMessageHandler {
         switch event {
         case "campaignClose", "campaign_close":
             trackedExplicitClose = true
-            AlgorithmX.shared.trackCampaignInteraction(
+            sendInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "close",
-                payload: payload, endpoint: Self.interactionEndpoint
+                payload: payload, endpoint: Self.interactionEndpoint, userId: displayCustomerId
             )
             dismiss(animated: true)
 
         case "campaignClick", "campaign_click":
-            AlgorithmX.shared.trackCampaignInteraction(
+            sendInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "click",
-                payload: payload, endpoint: Self.interactionEndpoint
+                payload: payload, endpoint: Self.interactionEndpoint, userId: displayCustomerId
             )
 
         case "campaignSubmit", "campaign_submit":
             trackedExplicitClose = true
-            AlgorithmX.shared.trackCampaignInteraction(
+            sendInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "submit",
-                payload: payload, endpoint: Self.interactionEndpoint
+                payload: payload, endpoint: Self.interactionEndpoint, userId: displayCustomerId
             )
             dismiss(animated: true)
 
@@ -212,10 +254,10 @@ extension CampaignViewController: WKScriptMessageHandler {
                 UIPasteboard.general.string = coupon
                 payload["couponCode"] = coupon
             }
-            AlgorithmX.shared.trackCampaignInteraction(
+            sendInteraction(
                 campaignId: campaignId, variationId: variationId,
                 interactionType: "copy",
-                payload: payload, endpoint: Self.interactionEndpoint
+                payload: payload, endpoint: Self.interactionEndpoint, userId: displayCustomerId
             )
 
         default:
@@ -251,13 +293,20 @@ extension CampaignViewController: WKNavigationDelegate {
         if let dynamicContent = dynamicContent, !dynamicContent.isEmpty {
             impressionPayload["dynamicContent"] = dynamicContent.mapValues { AlgorithmX.dynamicValueText($0) }
         }
-        AlgorithmX.shared.trackCampaignInteraction(
+        if let inAppViewId = inAppViewId {
+            impressionPayload["inAppViewId"] = inAppViewId
+            impressionPayload["language"] = language
+            impressionPayload["source"] = "api"
+        }
+        sendInteraction(
             campaignId: campaignId, variationId: variationId,
             interactionType: "impression",
-            payload: impressionPayload, endpoint: Self.interactionEndpoint
+            payload: impressionPayload, endpoint: Self.interactionEndpoint,
+            userId: displayCustomerId
         )
         AlgorithmX.shared.recordWebViewDisplaySuccess(
-            campaignId: campaignId, variationId: variationId, expiresAt: expiresAt
+            campaignId: campaignId, variationId: variationId, expiresAt: expiresAt,
+            userId: displayCustomerId
         )
     }
 

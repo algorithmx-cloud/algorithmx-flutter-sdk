@@ -58,7 +58,10 @@ class ActivityLifecycleManager private constructor() : Application.ActivityLifec
         }
     }
 
-    override fun onActivityResumed(activity: Activity) { process(activity, activity.intent) }
+    override fun onActivityResumed(activity: Activity) {
+        process(activity, activity.intent)
+        AlgorithmX.onActivityResumed(activity)
+    }
 
     // The transparent NotificationClickActivity is not the app coming to the
     // foreground; the host activity it launches is counted instead.

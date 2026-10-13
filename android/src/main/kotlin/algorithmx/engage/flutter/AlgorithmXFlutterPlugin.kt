@@ -405,6 +405,15 @@ class AlgorithmXFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                     result.success(null)
                 }
                 "getDeviceFingerprint" -> result.success(AlgorithmX.getDeviceFingerprint())
+                "setInAppLanguage" -> {
+                    AlgorithmX.setInAppLanguage(args.string("language"))
+                    result.success(null)
+                }
+                "getAnonymousId" -> result.success(AlgorithmX.getAnonymousId())
+                "setUserProfile" -> {
+                    AlgorithmX.setUserProfile(args.optionalMap("attributes") ?: emptyMap())
+                    result.success(null)
+                }
                 "identifyUser" -> {
                     AlgorithmX.identifyUser(args.string("userId"), args.optionalMap("attributes"))
                     result.success(null)
